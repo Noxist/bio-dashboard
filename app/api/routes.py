@@ -1,0 +1,559 @@
+"""
+FastAPI API routes for Bio-Dashboard.
+"""
+
+import json
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from app.config import (
+    API_KEY, ELVANSE_DEFAULT_DOSE_MG, MATE_CAFFEINE_MG,
+    MEDIKINET_DEFAULT_DOSE_MG, MEDIKINET_RETARD_DEFAULT_DOSE_MG,
+    USER_WEIGHT_KG, USER_HEIGHT_CM, USER_AGE, USER_IS_FASTING,
+)
+from app.core.database import (
+    insert_intake,
+    insert_subjective_log,
+    insert_health_snapshot,
+    insert_meal,
+    query_intakes,
+    query_subjective_logs,
+    query_health_snapshots,
+    query_meals,
+    get_latest_intake,
+    get_latest_health_snapshot,
+    get_todays_intakes,
+    get_todays_logs,
+    get_todays_meals,
+    delete_intake,
+    delete_subjective_log,
+    delete_meal,
+)
+from app.core.bio_engine import (
+    compute_bio_score, generate_day_curve,
+    elvanse_effect_curve,
+)
+
+router = APIRouter(prefix="/api")
+
+
+# --- Auth ---
+
+def verify_api_key(x_api_key: str = Header(default="")):
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+# --- Models ---
+
+class IntakeRequest(BaseModel):
+    substance: str = Field(..., pattern="^(elvanse|mate|medikinet|medikinet_retard|other)$")
+    dose_mg: Optional[float] = None
+    notes: str = ""
+    timestamp: Optional[str] = None
+
+
+class MealRequest(BaseModel):
+    meal_type: str = Field(..., pattern="^(fruehstueck|mittagessen|abendessen|snack)$")
+    notes: str = ""
+    timestamp: Optional[str] = None
+
+
+class SubjectiveLogRequest(BaseModel):
+    focus: int = Field(..., ge=1, le=10)
+    mood: int = Field(..., ge=1, le=10)
+    energy: int = Field(..., ge=1, le=10)
+    appetite: Optional[int] = Field(None, ge=1, le=10)
+    inner_unrest: Optional[int] = Field(None, ge=1, le=10)
+    tags: list[str] = []
+    timestamp: Optional[str] = None
+
+
+class HealthSnapshotRequest(BaseModel):
+    heart_rate: Optional[float] = None
+    resting_hr: Optional[float] = None
+    hrv: Optional[float] = None
+    sleep_duration: Optional[float] = None
+    sleep_confidence: Optional[float] = None
+    spo2: Optional[float] = None
+    respiratory_rate: Optional[float] = None
+    steps: Optional[int] = None
+    calories: Optional[float] = None
+    source: str = "manual"
+    timestamp: Optional[str] = None
+
+
+class BioScoreRequest(BaseModel):
+    timestamp: Optional[str] = None
+    sleep_duration_min: Optional[float] = None
+    sleep_confidence: Optional[float] = None
+
+
+# --- Endpoints ---
+
+@router.post("/intake", dependencies=[Depends(verify_api_key)])
+def log_intake(req: IntakeRequest):
+    """Log a substance intake event."""
+    # Set default doses
+    dose = req.dose_mg
+    if dose is None:
+        if req.substance == "elvanse":
+            dose = ELVANSE_DEFAULT_DOSE_MG
+        elif req.substance == "mate":
+            dose = MATE_CAFFEINE_MG
+        elif req.substance == "medikinet":
+            dose = MEDIKINET_DEFAULT_DOSE_MG
+        elif req.substance == "medikinet_retard":
+            dose = MEDIKINET_RETARD_DEFAULT_DOSE_MG
+
+    row_id = insert_intake(req.substance, dose, req.notes, req.timestamp)
+    return {"id": row_id, "substance": req.substance, "dose_mg": dose, "status": "ok"}
+
+
+@router.post("/log", dependencies=[Depends(verify_api_key)])
+def log_subjective(req: SubjectiveLogRequest):
+    """Log a subjective assessment (focus, mood, energy, appetite, inner_unrest)."""
+    tags_json = json.dumps(req.tags)
+    row_id = insert_subjective_log(
+        req.focus, req.mood, req.energy, tags_json, req.timestamp,
+        appetite=req.appetite, inner_unrest=req.inner_unrest,
+    )
+    return {"id": row_id, "status": "ok"}
+
+
+@router.post("/health", dependencies=[Depends(verify_api_key)])
+def log_health(req: HealthSnapshotRequest):
+    """Log a health data snapshot manually."""
+    data = req.model_dump(exclude={"source", "timestamp"})
+    row_id = insert_health_snapshot(data, req.source, req.timestamp)
+    return {"id": row_id, "status": "ok"}
+
+
+@router.get("/intake", dependencies=[Depends(verify_api_key)])
+def get_intakes(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    today: bool = False,
+):
+    """Query intake events."""
+    if today:
+        return get_todays_intakes()
+    if start and end:
+        return query_intakes(start, end)
+    # Default: last 24h
+    now = datetime.now()
+    return query_intakes(
+        (now - timedelta(hours=24)).isoformat(),
+        now.isoformat(),
+    )
+
+
+@router.get("/intake/latest", dependencies=[Depends(verify_api_key)])
+def get_latest_intake_route(substance: str = "elvanse"):
+    """Get the most recent intake of a substance."""
+    result = get_latest_intake(substance)
+    if not result:
+        return {"found": False}
+    return {"found": True, **result}
+
+
+@router.get("/log", dependencies=[Depends(verify_api_key)])
+def get_logs(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    today: bool = False,
+):
+    """Query subjective logs."""
+    if today:
+        return get_todays_logs()
+    if start and end:
+        return query_subjective_logs(start, end)
+    now = datetime.now()
+    return query_subjective_logs(
+        (now - timedelta(hours=24)).isoformat(),
+        now.isoformat(),
+    )
+
+
+@router.get("/health", dependencies=[Depends(verify_api_key)])
+def get_health(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    """Query health snapshots."""
+    if start and end:
+        return query_health_snapshots(start, end)
+    now = datetime.now()
+    return query_health_snapshots(
+        (now - timedelta(hours=24)).isoformat(),
+        now.isoformat(),
+    )
+
+
+@router.get("/health/latest", dependencies=[Depends(verify_api_key)])
+def get_latest_health_route():
+    """Get the most recent health snapshot."""
+    result = get_latest_health_snapshot()
+    if not result:
+        return {"found": False}
+    return {"found": True, **result}
+
+
+@router.get("/bio-score", dependencies=[Depends(verify_api_key)])
+def get_bio_score(
+    timestamp: Optional[str] = None,
+    sleep_duration_min: Optional[float] = None,
+    sleep_confidence: Optional[float] = None,
+):
+    """
+    Compute Bio-Score for a given timestamp (default: now).
+    Uses today's intake history to calculate substance effects.
+    """
+    target = datetime.fromisoformat(timestamp) if timestamp else datetime.now()
+
+    # Get today's intakes for curve calculation
+    today = target.strftime("%Y-%m-%d")
+    intakes = query_intakes(f"{today}T00:00:00", f"{today}T23:59:59")
+
+    # Get sleep data from latest health snapshot if not provided
+    if sleep_duration_min is None:
+        latest = get_latest_health_snapshot()
+        if latest:
+            sleep_duration_min = latest.get("sleep_duration")
+            if sleep_confidence is None:
+                sleep_confidence = latest.get("sleep_confidence")
+
+    result = compute_bio_score(target, intakes, sleep_duration_min, sleep_confidence)
+    return result
+
+
+@router.get("/bio-score/curve", dependencies=[Depends(verify_api_key)])
+def get_bio_curve(
+    date: Optional[str] = None,
+    interval: int = Query(default=15, ge=5, le=60),
+    sleep_duration_min: Optional[float] = None,
+    sleep_confidence: Optional[float] = None,
+):
+    """
+    Generate Bio-Score curve for a full day.
+    Returns data points at the given interval (minutes).
+    """
+    if date:
+        target_date = datetime.fromisoformat(date)
+    else:
+        target_date = datetime.now()
+
+    day_str = target_date.strftime("%Y-%m-%d")
+    intakes = query_intakes(f"{day_str}T00:00:00", f"{day_str}T23:59:59")
+
+    # Sleep data
+    if sleep_duration_min is None:
+        latest = get_latest_health_snapshot()
+        if latest:
+            sleep_duration_min = latest.get("sleep_duration")
+            if sleep_confidence is None:
+                sleep_confidence = latest.get("sleep_confidence")
+
+    curve = generate_day_curve(
+        target_date, intakes, sleep_duration_min, sleep_confidence, interval
+    )
+    return {"date": day_str, "interval_minutes": interval, "points": curve}
+
+
+@router.post("/webhook/ha/intake", dependencies=[Depends(verify_api_key)])
+def ha_intake_webhook(req: IntakeRequest):
+    """
+    Webhook endpoint for HA automations.
+    Triggered when intake button is pressed in HA.
+    """
+    dose = req.dose_mg
+    if dose is None:
+        if req.substance == "elvanse":
+            dose = ELVANSE_DEFAULT_DOSE_MG
+        elif req.substance == "mate":
+            dose = MATE_CAFFEINE_MG
+        elif req.substance == "medikinet":
+            dose = MEDIKINET_DEFAULT_DOSE_MG
+        elif req.substance == "medikinet_retard":
+            dose = MEDIKINET_RETARD_DEFAULT_DOSE_MG
+
+    row_id = insert_intake(req.substance, dose, req.notes, req.timestamp)
+    print(
+        f"[bio-api] HA webhook: {req.substance} {dose}mg logged (#{row_id})",
+        flush=True,
+    )
+    return {"id": row_id, "status": "ok"}
+
+
+@router.delete("/intake/{intake_id}", dependencies=[Depends(verify_api_key)])
+def delete_intake_route(intake_id: int):
+    """Delete an intake event by ID."""
+    deleted = delete_intake(intake_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    return {"deleted": intake_id, "status": "ok"}
+
+
+@router.delete("/log/{log_id}", dependencies=[Depends(verify_api_key)])
+def delete_log_route(log_id: int):
+    """Delete a subjective log by ID."""
+    deleted = delete_subjective_log(log_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Log not found")
+    return {"deleted": log_id, "status": "ok"}
+
+
+@router.post("/meal", dependencies=[Depends(verify_api_key)])
+def log_meal(req: MealRequest):
+    """Log a meal event."""
+    row_id = insert_meal(req.meal_type, req.notes, req.timestamp)
+    return {"id": row_id, "meal_type": req.meal_type, "status": "ok"}
+
+
+@router.get("/meal", dependencies=[Depends(verify_api_key)])
+def get_meals(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    today: bool = False,
+):
+    """Query meal events."""
+    if today:
+        return get_todays_meals()
+    if start and end:
+        return query_meals(start, end)
+    now = datetime.now()
+    return query_meals(
+        (now - timedelta(hours=24)).isoformat(),
+        now.isoformat(),
+    )
+
+
+@router.delete("/meal/{meal_id}", dependencies=[Depends(verify_api_key)])
+def delete_meal_route(meal_id: int):
+    """Delete a meal event by ID."""
+    deleted = delete_meal(meal_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Meal not found")
+    return {"deleted": meal_id, "status": "ok"}
+
+
+@router.get("/status")
+def status():
+    """Health check endpoint."""
+    return {
+        "service": "bio-dashboard",
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "user": {
+            "weight_kg": USER_WEIGHT_KG,
+            "height_cm": USER_HEIGHT_CM,
+            "age": USER_AGE,
+            "fasting": USER_IS_FASTING,
+        },
+    }
+
+
+@router.get("/log-reminder", dependencies=[Depends(verify_api_key)])
+def get_log_reminder():
+    """
+    Compute when the next subjective log is due.
+    Schedule relative to Elvanse intake or fixed times.
+    """
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    today_start = f"{today}T00:00:00"
+    today_end = f"{today}T23:59:59"
+
+    intakes_today = query_intakes(today_start, today_end)
+    logs_today = query_subjective_logs(today_start, today_end)
+
+    logged_times = []
+    for log in logs_today:
+        try:
+            logged_times.append(datetime.fromisoformat(log["timestamp"]))
+        except (ValueError, KeyError):
+            pass
+
+    elvanse_intakes = [i for i in intakes_today if i.get("substance") == "elvanse"]
+
+    if elvanse_intakes:
+        elvanse_time = datetime.fromisoformat(elvanse_intakes[0]["timestamp"])
+        target_times = [
+            ("Baseline (vor Einnahme)", elvanse_time - timedelta(minutes=15)),
+            ("+1.5h (Onset)", elvanse_time + timedelta(hours=1, minutes=30)),
+            ("+4h (Peak)", elvanse_time + timedelta(hours=4)),
+            ("+8h (Decline)", elvanse_time + timedelta(hours=8)),
+            ("Vor Schlafen", now.replace(hour=22, minute=0, second=0)),
+        ]
+    else:
+        target_times = [
+            ("Morgens", now.replace(hour=9, minute=0, second=0)),
+            ("Mittags", now.replace(hour=12, minute=0, second=0)),
+            ("Nachmittags", now.replace(hour=15, minute=0, second=0)),
+            ("Abends", now.replace(hour=18, minute=0, second=0)),
+            ("Vor Schlafen", now.replace(hour=21, minute=0, second=0)),
+        ]
+
+    TOLERANCE_MIN = 30
+    schedule = []
+    next_due = None
+
+    for label, target in target_times:
+        already_logged = any(
+            abs((lt - target).total_seconds()) < TOLERANCE_MIN * 60
+            for lt in logged_times
+        )
+        if already_logged:
+            entry_status = "done"
+        elif target <= now + timedelta(minutes=TOLERANCE_MIN):
+            entry_status = "due"
+        else:
+            entry_status = "upcoming"
+
+        entry = {
+            "label": label,
+            "target_time": target.strftime("%H:%M"),
+            "status": entry_status,
+        }
+        schedule.append(entry)
+
+        if not already_logged and next_due is None and target >= now - timedelta(minutes=TOLERANCE_MIN):
+            next_due = entry
+
+    return {
+        "schedule": schedule,
+        "next_due": next_due,
+        "logs_today": len(logs_today),
+        "target_logs": 5,
+    }
+
+
+@router.get("/model/fit", dependencies=[Depends(verify_api_key)])
+def get_model_fit():
+    """
+    Analyze Elvanse intake + focus rating pairs to estimate
+    personal pharmacokinetic response curve.
+    Requires at least 15 pairs for meaningful results.
+    """
+    import statistics
+
+    now = datetime.now()
+    start = (now - timedelta(days=90)).isoformat()
+    end = now.isoformat()
+
+    intakes = query_intakes(start, end)
+    logs = query_subjective_logs(start, end)
+
+    elvanse_intakes = [i for i in intakes if i.get("substance") == "elvanse"]
+
+    if not elvanse_intakes or not logs:
+        return {
+            "status": "insufficient_data",
+            "pairs": 0,
+            "required": 15,
+            "message": "Noch nicht genug Daten. Bitte regelmassig loggen.",
+        }
+
+    # Build pairs: for each focus log, find nearest preceding Elvanse intake
+    pairs = []
+    for log in logs:
+        focus = log.get("focus")
+        if focus is None:
+            continue
+        log_time = datetime.fromisoformat(log["timestamp"])
+
+        best_intake = None
+        best_offset = None
+        for ei in elvanse_intakes:
+            ei_time = datetime.fromisoformat(ei["timestamp"])
+            offset_h = (log_time - ei_time).total_seconds() / 3600
+            if 0 <= offset_h <= 16:
+                if best_offset is None or offset_h < best_offset:
+                    best_intake = ei
+                    best_offset = offset_h
+
+        if best_intake is not None:
+            predicted_level = elvanse_effect_curve(best_offset, best_intake.get("dose_mg") or 40)
+            pairs.append({
+                "offset_h": round(best_offset, 2),
+                "focus": focus,
+                "predicted_level": round(predicted_level, 3),
+                "dose_mg": best_intake.get("dose_mg"),
+            })
+
+    if len(pairs) < 15:
+        return {
+            "status": "insufficient_data",
+            "pairs": len(pairs),
+            "required": 15,
+            "message": f"Noch {15 - len(pairs)} Paare noetig. Bitte 5x taeglich loggen.",
+            "collected_pairs": pairs,
+        }
+
+    # Pearson correlation
+    focus_values = [p["focus"] for p in pairs]
+    level_values = [p["predicted_level"] for p in pairs]
+    n = len(pairs)
+    mean_f = statistics.mean(focus_values)
+    mean_l = statistics.mean(level_values)
+    std_f = statistics.stdev(focus_values) if n > 1 else 1.0
+    std_l = statistics.stdev(level_values) if n > 1 else 1.0
+
+    if std_f > 0 and std_l > 0:
+        correlation = sum(
+            (f - mean_f) * (l - mean_l) for f, l in zip(focus_values, level_values)
+        ) / ((n - 1) * std_f * std_l)
+    else:
+        correlation = 0.0
+
+    # Efficacy threshold (level where focus >= 7)
+    high_focus_levels = [p["predicted_level"] for p in pairs if p["focus"] >= 7]
+    threshold = min(high_focus_levels) if high_focus_levels else None
+
+    # Personal tmax estimate
+    offset_focus = {}
+    for p in pairs:
+        bucket = round(p["offset_h"])
+        if bucket not in offset_focus:
+            offset_focus[bucket] = []
+        offset_focus[bucket].append(p["focus"])
+
+    peak_offset = max(
+        offset_focus.keys(),
+        key=lambda k: statistics.mean(offset_focus[k])
+    ) if offset_focus else None
+
+    # Generate recommendation
+    rec_parts = []
+    if n < 30:
+        rec_parts.append(f"Datenqualitaet: Maessig ({n} Paare). Mindestens 30 empfohlen.")
+    else:
+        rec_parts.append(f"Datenqualitaet: Gut ({n} Paare).")
+
+    if correlation > 0.5:
+        rec_parts.append(f"Starke Korrelation ({correlation:.2f}) zwischen Elvanse-Level und Fokus.")
+    elif correlation > 0.2:
+        rec_parts.append(f"Moderate Korrelation ({correlation:.2f}). Weiter loggen fuer bessere Praezision.")
+    else:
+        rec_parts.append(f"Schwache Korrelation ({correlation:.2f}). Andere Faktoren beeinflussen den Fokus stark.")
+
+    if threshold is not None:
+        rec_parts.append(f"Persoenliche Wirkschwelle: Fokus >= 7 ab Level {threshold:.2f}.")
+    if peak_offset is not None:
+        rec_parts.append(f"Dein persoenlicher Peak liegt bei ca. {peak_offset}h nach Einnahme.")
+
+    return {
+        "status": "ok",
+        "pairs": n,
+        "correlation": round(correlation, 3),
+        "mean_focus": round(mean_f, 1),
+        "mean_level": round(mean_l, 3),
+        "personal_threshold": round(threshold, 3) if threshold else None,
+        "personal_peak_offset_h": peak_offset,
+        "high_focus_count": len(high_focus_levels),
+        "recommendation": " | ".join(rec_parts),
+        "collected_pairs": pairs,
+    }

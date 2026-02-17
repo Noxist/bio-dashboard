@@ -1,0 +1,116 @@
+# ============================================
+# HOME ASSISTANT CONFIG SNIPPETS
+# Bio-Dashboard Integration
+# ============================================
+#
+# Fuege diese Abschnitte in deine HA configuration.yaml ein.
+# Danach HA neu starten.
+#
+# 1. Ersetze BIO_API_URL mit der echten URL deines Bio-Dashboard Servers.
+# 2. Ersetze BIO_API_KEY mit dem Wert aus services/.env (BIO_API_KEY).
+# 3. Erstelle einen HA Long-Lived Access Token:
+#    HA UI -> Profil -> Long-Lived Access Tokens -> Token erstellen
+#    Trage den Token in services/.env unter HA_TOKEN ein.
+
+# ============================================
+# 1. INPUT BUTTONS (in configuration.yaml)
+# ============================================
+
+# input_button:
+#   elvanse_taken:
+#     name: Elvanse genommen
+#     icon: mdi:pill
+#
+#   mate_consumed:
+#     name: Mate getrunken
+#     icon: mdi:cup
+
+# ============================================
+# 2. REST COMMANDS (in configuration.yaml)
+# ============================================
+
+# rest_command:
+#   bio_log_elvanse:
+#     url: "https://bioapi.thegrandprinterofmemesandunfinitetodosservanttonox.tech/api/webhook/ha/intake"
+#     method: POST
+#     headers:
+#       x-api-key: "bio_leandro_2026_secret"
+#     content_type: "application/json"
+#     payload: '{"substance": "elvanse", "dose_mg": 40}'
+#     timeout: 10
+#
+#   bio_log_mate:
+#     url: "https://bioapi.thegrandprinterofmemesandunfinitetodosservanttonox.tech/api/webhook/ha/intake"
+#     method: POST
+#     headers:
+#       x-api-key: "bio_leandro_2026_secret"
+#     content_type: "application/json"
+#     payload: '{"substance": "mate", "dose_mg": 80}'
+#     timeout: 10
+#
+#   bio_log_lamotrigin:
+#     url: "https://bioapi.thegrandprinterofmemesandunfinitetodosservanttonox.tech/api/webhook/ha/intake"
+#     method: POST
+#     headers:
+#       x-api-key: "bio_leandro_2026_secret"
+#     content_type: "application/json"
+#     payload: '{"substance": "lamotrigin"}'
+#     timeout: 10
+
+# ============================================
+# 3. AUTOMATIONS (in automations.yaml)
+# ============================================
+
+# - id: bio_elvanse_push
+#   alias: Bio -- Elvanse geloggt
+#   triggers:
+#   - trigger: state
+#     entity_id: input_button.elvanse_taken
+#   actions:
+#   - action: rest_command.bio_log_elvanse
+#     data: {}
+#   mode: single
+#
+# - id: bio_mate_push
+#   alias: Bio -- Mate geloggt
+#   triggers:
+#   - trigger: state
+#     entity_id: input_button.mate_consumed
+#   actions:
+#   - action: rest_command.bio_log_mate
+#     data: {}
+#   mode: single
+#
+# - id: bio_lamotrigin_push
+#   alias: Bio -- Lamotrigin geloggt
+#   description: Wird getriggert wenn Lamotrigin-Todo als completed markiert wird
+#   triggers:
+#   - trigger: state
+#     entity_id: todo.medikamente
+#   conditions:
+#   - condition: template
+#     value_template: "{{ 'Lamotrigin' in trigger.to_state.attributes.get('items', '') }}"
+#   actions:
+#   - action: rest_command.bio_log_lamotrigin
+#     data: {}
+#   mode: single
+
+# ============================================
+# 4. NFC TAG ACTIONS (optional)
+# ============================================
+# Du kannst NFC-Tags auf deinem Nachttisch platzieren:
+# - Tag 1: Elvanse genommen -> triggert input_button.elvanse_taken
+# - Tag 2: Mate getrunken -> triggert input_button.mate_consumed
+#
+# - id: nfc_elvanse
+#   alias: NFC -- Elvanse
+#   triggers:
+#   - trigger: tag
+#     tag_id: DEIN_ELVANSE_TAG_ID
+#   actions:
+#   - action: input_button.press
+#     target:
+#       entity_id: input_button.elvanse_taken
+#   - action: rest_command.bio_log_elvanse
+#     data: {}
+#   mode: single
