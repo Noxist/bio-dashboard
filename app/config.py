@@ -35,6 +35,25 @@ PRINTER_API_KEY = os.getenv("PRINTER_API_KEY", "")
 # --- OpenAI (for future Daily Briefing) ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# --- Water / Hydration ---
+# Evidence-based hydration model (Gemini research, EFSA 2010, IOM 2004, Holliday-Segar)
+WATER_BASE_ML_PER_KG: float = float(os.getenv("WATER_BASE_ML_PER_KG", "33.3"))  # midpoint 30-35 ml/kg
+WATER_DRUG_MODIFIER_ML: int = int(os.getenv("WATER_DRUG_MODIFIER_ML", "110"))     # +110ml for Elvanse 5% REE
+WATER_ACTIVITY_ML_PER_1K_STEPS: int = int(os.getenv("WATER_ACTIVITY_ML_PER_1K", "60"))  # +60ml per 1k steps >4k
+WATER_ACTIVITY_BASELINE_STEPS: int = int(os.getenv("WATER_ACTIVITY_BASELINE", "4000"))   # sedentary baseline
+WATER_FASTING_MODIFIER_ML: int = int(os.getenv("WATER_FASTING_MODIFIER_ML", "500"))      # OMAD food moisture loss
+WATER_MAX_HOURLY_ML: int = int(os.getenv("WATER_MAX_HOURLY_ML", "800"))           # renal excretion safety cap
+WATER_WAKING_HOURS: int = int(os.getenv("WATER_WAKING_HOURS", "16"))              # assumed waking hours
+WATER_DEFAULT_GOAL_ML: int = int(os.getenv("WATER_DEFAULT_GOAL_ML", "3200"))      # fallback before calc
+# Dehydration detection (wearable telemetry)
+DEHYDRATION_HR_DRIFT_BPM: float = float(os.getenv("DEHYDRATION_HR_DRIFT", "4.0"))   # HR rise threshold
+DEHYDRATION_HRV_DROP_PCT: float = float(os.getenv("DEHYDRATION_HRV_DROP", "15.0"))  # % HRV drop threshold
+# Migraine prophylaxis electrolyte targets (mg/day)
+MIGRAINE_MG_TARGET: int = int(os.getenv("MIGRAINE_MG_TARGET", "500"))    # Magnesium
+MIGRAINE_K_TARGET: int = int(os.getenv("MIGRAINE_K_TARGET", "1500"))     # Potassium
+# Watch server auth (reuse BIO_API_KEY)
+WATER_WATCH_TOKEN: str = os.getenv("WATER_WATCH_TOKEN", "") or API_KEY
+
 # --- Allometric Reference ---
 REFERENCE_WEIGHT_KG: float = 70.0  # Standard reference adult weight
 
@@ -101,4 +120,7 @@ HA_SENSORS = {
     "calories": "sensor.pixel_9_pro_xl_active_calories_burned_2",
     "sleepmode": "input_boolean.sleepmode",
     "inbed": "input_boolean.inbed",
+    # Water tracking + weight (from HA)
+    "water_daily": "sensor.water_tracker_daily",
+    "user_weight": "input_number.user_weight_kg",
 }

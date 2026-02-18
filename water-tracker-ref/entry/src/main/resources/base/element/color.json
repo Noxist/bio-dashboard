@@ -1,0 +1,32 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#1A1A2E"
+    },
+    {
+      "name": "primary",
+      "value": "#4FC3F7"
+    },
+    {
+      "name": "background",
+      "value": "#1A1A2E"
+    },
+    {
+      "name": "surface",
+      "value": "#16213E"
+    },
+    {
+      "name": "accent",
+      "value": "#00BCD4"
+    },
+    {
+      "name": "success",
+      "value": "#66BB6A"
+    },
+    {
+      "name": "warning",
+      "value": "#FFA726"
+    }
+  ]
+}

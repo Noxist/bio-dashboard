@@ -577,10 +577,12 @@ def compute_bio_score(
     sleep_confidence: Optional[float] = None,
     hrv_ms: Optional[float] = None,
     resting_hr: Optional[float] = None,
+    water_intake_ml: Optional[int] = None,
+    water_goal_ml: Optional[int] = None,
 ) -> dict:
     """
     Compute composite Bio-Score with allometric PK, DDI warnings,
-    and HRV autonomic monitoring.
+    HRV autonomic monitoring, and hydration status.
 
     Returns dict with score, components, absolute ng/ml, warnings.
     """
@@ -622,8 +624,17 @@ def compute_bio_score(
     stim_peak = max(elv_lv, med_combined)
     hrv_pen = hrv_penalty(hrv_ms, resting_hr, stim_peak)
 
+    # 7. Hydration modifier (-10 to +5)
+    hydration_mod = 0.0
+    if water_intake_ml is not None and water_goal_ml is not None and water_goal_ml > 0:
+        from app.core.water_engine import hydration_bio_score_modifier
+        hydration_mod = hydration_bio_score_modifier(
+            water_intake_ml, water_goal_ml, hour,
+        )
+
     # Composite
-    raw_score = circadian + elvanse_boost + medikinet_boost + caffeine_boost + sleep_mod + hrv_pen
+    raw_score = (circadian + elvanse_boost + medikinet_boost + caffeine_boost
+                 + sleep_mod + hrv_pen + hydration_mod)
     score = max(0.0, min(100.0, raw_score))
 
     # Absolute concentrations (ng/ml)
@@ -680,6 +691,7 @@ def compute_bio_score(
         "codein_ng_ml": round(cod_conc, 1),
         # Composite
         "cns_load": round(cns_load, 3),
+        "hydration_modifier": round(hydration_mod, 1),
         "phase": phase,
         "timestamp": target_time.isoformat(),
         "warnings": ddi_warnings,

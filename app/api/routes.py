@@ -14,6 +14,7 @@ from app.config import (
     MEDIKINET_DEFAULT_DOSE_MG, MEDIKINET_RETARD_DEFAULT_DOSE_MG,
     CO_DAFALGAN_DEFAULT_DOSE_MG,
     USER_WEIGHT_KG, USER_HEIGHT_CM, USER_AGE, USER_IS_FASTING,
+    WATER_WATCH_TOKEN,
 )
 from app.core.database import (
     insert_intake,
@@ -32,10 +33,31 @@ from app.core.database import (
     delete_intake,
     delete_subjective_log,
     delete_meal,
+    # Water tracking
+    insert_water_event,
+    query_water_events,
+    get_todays_water_events,
+    get_todays_water_total,
+    get_last_water_event,
+    delete_water_event,
+    upsert_water_goal,
+    get_water_goal,
+    get_water_goals_range,
+    # Weight tracking
+    insert_weight,
+    get_latest_weight,
+    query_weight_log,
 )
 from app.core.bio_engine import (
     compute_bio_score, generate_day_curve,
     elvanse_effect_curve, check_ddi_warnings,
+)
+from app.core.water_engine import (
+    compute_daily_goal,
+    assess_hydration,
+    check_intake_velocity,
+    detect_dehydration_from_vitals,
+    hydration_bio_score_modifier,
 )
 
 router = APIRouter(prefix="/api")
@@ -259,6 +281,8 @@ def get_bio_score(
     result = compute_bio_score(
         target, intakes, sleep_duration_min, sleep_confidence,
         hrv_ms=hrv_ms, resting_hr=resting_hr,
+        water_intake_ml=get_todays_water_total(),
+        water_goal_ml=_compute_today_goal().get("goal_ml"),
     )
     return result
 
@@ -386,7 +410,7 @@ def status():
     return {
         "service": "bio-dashboard",
         "status": "ok",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "timestamp": datetime.now().isoformat(),
         "user": {
             "weight_kg": USER_WEIGHT_KG,
@@ -394,8 +418,354 @@ def status():
             "age": USER_AGE,
             "fasting": USER_IS_FASTING,
         },
-        "model": "allometric-cascade-v2",
+        "model": "allometric-cascade-v2+hydration",
     }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# WATER TRACKING — Watch API + Dashboard endpoints
+# ══════════════════════════════════════════════════════════════════════
+
+def verify_watch_token(authorization: str = Header(default="")):
+    """Verify Bearer token from watch (reuses BIO_API_KEY or WATER_WATCH_TOKEN)."""
+    token = WATER_WATCH_TOKEN
+    if not token:
+        return  # No token configured, allow all
+    expected = f"Bearer {token}"
+    if authorization != expected:
+        # Also accept x-api-key style
+        if authorization != token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _get_effective_weight() -> float:
+    """Get the latest weight from DB, fallback to config."""
+    latest = get_latest_weight()
+    if latest and latest.get("weight_kg"):
+        return float(latest["weight_kg"])
+    return USER_WEIGHT_KG
+
+
+def _compute_today_goal() -> dict:
+    """Compute today's dynamic water goal using all available data."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+
+    weight = _get_effective_weight()
+
+    # Check if Elvanse was taken today
+    intakes = query_intakes(f"{today}T00:00:00", f"{today}T23:59:59")
+    elvanse_active = any(i.get("substance") == "elvanse" for i in intakes)
+
+    # Get steps from latest health snapshot
+    latest_health = get_latest_health_snapshot()
+    steps = 0
+    if latest_health and latest_health.get("steps"):
+        steps = int(latest_health["steps"])
+
+    # Count caffeine doses
+    caffeine_doses = sum(1 for i in intakes if i.get("substance") == "mate")
+
+    goal_data = compute_daily_goal(
+        weight_kg=weight,
+        is_fasting=USER_IS_FASTING,
+        elvanse_active=elvanse_active,
+        steps=steps,
+        caffeine_doses=caffeine_doses,
+    )
+
+    # Persist to DB
+    upsert_water_goal(
+        date=today,
+        goal_ml=goal_data["goal_ml"],
+        base_ml=goal_data["base_ml"],
+        drug_mod_ml=goal_data["drug_modifier_ml"],
+        fasting_mod_ml=goal_data["fasting_modifier_ml"],
+        activity_mod_ml=goal_data["activity_modifier_ml"],
+        weight_kg=weight,
+        steps=steps,
+    )
+
+    return goal_data
+
+
+# --- Watch endpoints (compatible with ServerService.ets) ---
+
+from fastapi import Body, Request as FastAPIRequest
+
+
+@router.post("/water/report")
+async def water_report_endpoint(request: FastAPIRequest):
+    """
+    Receive hydration status from the Huawei Watch.
+    POST /api/water/report
+    Body: {device_id, current_intake, daily_goal, entry_count, last_drink_time, timestamp}
+    """
+    # Verify auth
+    auth = request.headers.get("authorization", "")
+    token = WATER_WATCH_TOKEN
+    if token and auth != f"Bearer {token}" and auth != token:
+        api_key = request.headers.get("x-api-key", "")
+        if API_KEY and api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    data = await request.json()
+    import logging
+    log = logging.getLogger("bio.water")
+
+    log.info(
+        "Watch report: %d ml / %d ml (%d entries)",
+        data.get("current_intake", 0),
+        data.get("daily_goal", 0),
+        data.get("entry_count", 0),
+    )
+
+    return {"status": "ok"}
+
+
+@router.get("/water/instruction")
+async def water_instruction_endpoint(
+    request: FastAPIRequest,
+    current_intake: int = Query(default=0),
+    daily_goal: int = Query(default=0),
+    last_drink_time: str = Query(default=""),
+):
+    """
+    Return a drinking instruction to the Huawei Watch.
+    GET /api/water/instruction?current_intake=X&daily_goal=X&last_drink_time=X
+
+    This is the core intelligence endpoint: computes dynamic goal,
+    checks deficit, pacing, velocity, and returns coaching instructions.
+    """
+    # Verify auth
+    auth = request.headers.get("authorization", "")
+    token = WATER_WATCH_TOKEN
+    if token and auth != f"Bearer {token}" and auth != token:
+        api_key = request.headers.get("x-api-key", "")
+        if API_KEY and api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    now = datetime.now()
+
+    # Compute dynamic goal
+    goal_data = _compute_today_goal()
+    computed_goal = goal_data["goal_ml"]
+
+    # Use watch's current_intake (it's the source of truth)
+    intake = current_intake
+
+    # Parse last drink time
+    last_drink = None
+    if last_drink_time:
+        try:
+            from dateutil.parser import parse as parse_date
+            last_drink = parse_date(last_drink_time)
+        except (ValueError, ImportError):
+            try:
+                last_drink = datetime.fromisoformat(last_drink_time.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+    # Get hydration assessment
+    assessment = assess_hydration(
+        current_intake_ml=intake,
+        goal_ml=computed_goal,
+        now=now,
+        last_drink_time=last_drink,
+    )
+
+    # Check intake velocity (overhydration protection)
+    water_events = get_todays_water_events()
+    velocity = check_intake_velocity(water_events, now)
+
+    # Override with velocity alert if needed
+    message = assessment["message"]
+    priority = assessment["priority"]
+    amount = assessment["recommended_amount"]
+    deadline = assessment["deadline_minutes"]
+
+    if velocity["alert"]:
+        message = velocity["message"]
+        priority = "critical"
+        amount = 0  # Don't recommend more water!
+        deadline = 0
+
+    # daily_target_override: send the computed goal to the watch
+    # (only if different from what the watch currently has)
+    target_override = computed_goal if computed_goal != daily_goal else 0
+
+    return {
+        "message": message,
+        "recommended_amount": amount,
+        "priority": priority,
+        "deadline_minutes": deadline,
+        "daily_target_override": target_override,
+        "timestamp": now.isoformat(),
+    }
+
+
+# --- Dashboard water endpoints ---
+
+class WaterIntakeRequest(BaseModel):
+    amount_ml: int = Field(..., ge=1, le=2000)
+    source: str = Field(default="manual", pattern="^(watch|manual|ha)$")
+    notes: str = ""
+    timestamp: Optional[str] = None
+
+
+@router.post("/water/intake", dependencies=[Depends(verify_api_key)])
+def log_water_intake(req: WaterIntakeRequest):
+    """Log a water intake event manually or from HA."""
+    row_id = insert_water_event(req.amount_ml, req.source, req.notes, req.timestamp)
+
+    # Check velocity after logging
+    now = datetime.now()
+    events = get_todays_water_events()
+    velocity = check_intake_velocity(events, now)
+
+    result = {"id": row_id, "amount_ml": req.amount_ml, "status": "ok"}
+    if velocity["alert"]:
+        result["warning"] = velocity
+    return result
+
+
+@router.get("/water/intake", dependencies=[Depends(verify_api_key)])
+def get_water_intake(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    today: bool = False,
+):
+    """Query water intake events."""
+    if today:
+        return get_todays_water_events()
+    if start and end:
+        return query_water_events(start, end)
+    now = datetime.now()
+    return query_water_events(
+        (now - timedelta(hours=24)).isoformat(),
+        now.isoformat(),
+    )
+
+
+@router.delete("/water/intake/{event_id}", dependencies=[Depends(verify_api_key)])
+def delete_water_intake(event_id: int):
+    """Delete a water intake event."""
+    deleted = delete_water_event(event_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Water event not found")
+    return {"deleted": event_id, "status": "ok"}
+
+
+@router.get("/water/goal", dependencies=[Depends(verify_api_key)])
+def get_water_goal_endpoint(date: Optional[str] = None):
+    """
+    Get the computed daily water goal (with breakdown).
+    If no date specified, computes for today.
+    """
+    if date:
+        stored = get_water_goal(date)
+        if stored:
+            return stored
+    # Compute fresh
+    return _compute_today_goal()
+
+
+@router.get("/water/goal/history", dependencies=[Depends(verify_api_key)])
+def get_water_goal_history(days: int = Query(default=7, ge=1, le=90)):
+    """Get water goal history for the last N days."""
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    return get_water_goals_range(
+        start.strftime("%Y-%m-%d"),
+        end.strftime("%Y-%m-%d"),
+    )
+
+
+@router.get("/water/status", dependencies=[Depends(verify_api_key)])
+def water_status_endpoint():
+    """
+    Full hydration dashboard: goal, intake, assessment, velocity, dehydration.
+    """
+    now = datetime.now()
+    goal_data = _compute_today_goal()
+    total_ml = get_todays_water_total()
+    events = get_todays_water_events()
+    last_event = get_last_water_event()
+
+    last_drink = None
+    if last_event:
+        try:
+            last_drink = datetime.fromisoformat(last_event["timestamp"])
+        except (ValueError, KeyError):
+            pass
+
+    assessment = assess_hydration(
+        current_intake_ml=total_ml,
+        goal_ml=goal_data["goal_ml"],
+        now=now,
+        last_drink_time=last_drink,
+    )
+    velocity = check_intake_velocity(events, now)
+
+    # Dehydration detection from vitals
+    latest_health = get_latest_health_snapshot()
+    dehydration = {"alert": False}
+    if latest_health:
+        # Use today's morning baseline vs current
+        dehydration = detect_dehydration_from_vitals(
+            current_resting_hr=latest_health.get("resting_hr"),
+            baseline_resting_hr=latest_health.get("resting_hr"),  # TODO: use morning baseline
+            current_hrv=latest_health.get("hrv"),
+            baseline_hrv=latest_health.get("hrv"),  # TODO: use overnight baseline
+        )
+
+    return {
+        "timestamp": now.isoformat(),
+        "goal": goal_data,
+        "intake_ml": total_ml,
+        "events_today": len(events),
+        "assessment": assessment,
+        "velocity": velocity,
+        "dehydration": dehydration,
+        "weight_kg": _get_effective_weight(),
+    }
+
+
+# --- Weight endpoints ---
+
+class WeightRequest(BaseModel):
+    weight_kg: float = Field(..., ge=30, le=300)
+    source: str = Field(default="manual", pattern="^(manual|ha|watch)$")
+    timestamp: Optional[str] = None
+
+
+@router.post("/weight", dependencies=[Depends(verify_api_key)])
+def log_weight(req: WeightRequest):
+    """Log a weight measurement."""
+    row_id = insert_weight(req.weight_kg, req.source, req.timestamp)
+    return {"id": row_id, "weight_kg": req.weight_kg, "status": "ok"}
+
+
+@router.get("/weight", dependencies=[Depends(verify_api_key)])
+def get_weight(days: int = Query(default=30, ge=1, le=365)):
+    """Get weight history."""
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    entries = query_weight_log(start.isoformat(), end.isoformat())
+    latest = get_latest_weight()
+    return {
+        "latest": latest,
+        "history": entries,
+    }
+
+
+@router.get("/weight/latest", dependencies=[Depends(verify_api_key)])
+def get_weight_latest():
+    """Get the most recent weight."""
+    latest = get_latest_weight()
+    if not latest:
+        return {"found": False, "weight_kg": USER_WEIGHT_KG, "source": "config"}
+    return {"found": True, **latest}
 
 
 @router.get("/ddi-check", dependencies=[Depends(verify_api_key)])

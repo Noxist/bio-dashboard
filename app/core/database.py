@@ -1,6 +1,6 @@
 """
 SQLite database setup and access layer.
-Schema: intake_events, subjective_logs, health_snapshots.
+Schema: intake_events, subjective_logs, health_snapshots, water_events, weight_log.
 """
 
 import sqlite3
@@ -65,6 +65,39 @@ CREATE TABLE IF NOT EXISTS meal_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_meal_ts ON meal_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS water_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT    NOT NULL,
+    amount_ml   INTEGER NOT NULL,
+    source      TEXT    DEFAULT 'watch' CHECK(source IN ('watch','manual','ha')),
+    notes       TEXT    DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_water_ts ON water_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS water_goals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date        TEXT    NOT NULL UNIQUE,
+    goal_ml     INTEGER NOT NULL,
+    base_ml     INTEGER,
+    drug_mod_ml INTEGER DEFAULT 0,
+    fasting_mod_ml INTEGER DEFAULT 0,
+    activity_mod_ml INTEGER DEFAULT 0,
+    weight_kg   REAL,
+    steps       INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_water_goal_date ON water_goals(date);
+
+CREATE TABLE IF NOT EXISTS weight_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT    NOT NULL,
+    weight_kg   REAL    NOT NULL,
+    source      TEXT    DEFAULT 'manual' CHECK(source IN ('manual','ha','watch'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_weight_ts ON weight_log(timestamp);
 """
 
 
@@ -361,3 +394,120 @@ def delete_meal(meal_id: int) -> bool:
     with db_cursor() as cur:
         cur.execute("DELETE FROM meal_events WHERE id=?", (meal_id,))
         return cur.rowcount > 0
+
+
+# --- Water tracking ---
+
+def insert_water_event(amount_ml: int, source: str = "watch",
+                       notes: str = "", timestamp: Optional[str] = None) -> int:
+    ts = timestamp or datetime.now().isoformat()
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO water_events (timestamp, amount_ml, source, notes) VALUES (?,?,?,?)",
+            (ts, amount_ml, source, notes),
+        )
+        return cur.lastrowid
+
+
+def query_water_events(start: str, end: str) -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM water_events WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            (start, end),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_todays_water_events() -> list[dict]:
+    today = datetime.now().strftime("%Y-%m-%d")
+    return query_water_events(f"{today}T00:00:00", f"{today}T23:59:59")
+
+
+def get_todays_water_total() -> int:
+    """Sum of all water intake today in ml."""
+    events = get_todays_water_events()
+    return sum(e.get("amount_ml", 0) for e in events)
+
+
+def get_last_water_event() -> Optional[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM water_events ORDER BY timestamp DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def delete_water_event(event_id: int) -> bool:
+    with db_cursor() as cur:
+        cur.execute("DELETE FROM water_events WHERE id=?", (event_id,))
+        return cur.rowcount > 0
+
+
+# --- Water goals ---
+
+def upsert_water_goal(date: str, goal_ml: int, base_ml: int = 0,
+                      drug_mod_ml: int = 0, fasting_mod_ml: int = 0,
+                      activity_mod_ml: int = 0, weight_kg: float = 0,
+                      steps: int = 0) -> int:
+    with db_cursor() as cur:
+        cur.execute(
+            """INSERT INTO water_goals (date, goal_ml, base_ml, drug_mod_ml,
+                   fasting_mod_ml, activity_mod_ml, weight_kg, steps)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET
+                   goal_ml=excluded.goal_ml, base_ml=excluded.base_ml,
+                   drug_mod_ml=excluded.drug_mod_ml, fasting_mod_ml=excluded.fasting_mod_ml,
+                   activity_mod_ml=excluded.activity_mod_ml, weight_kg=excluded.weight_kg,
+                   steps=excluded.steps""",
+            (date, goal_ml, base_ml, drug_mod_ml, fasting_mod_ml,
+             activity_mod_ml, weight_kg, steps),
+        )
+        return cur.lastrowid
+
+
+def get_water_goal(date: str) -> Optional[dict]:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM water_goals WHERE date=?", (date,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_water_goals_range(start_date: str, end_date: str) -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM water_goals WHERE date BETWEEN ? AND ? ORDER BY date",
+            (start_date, end_date),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# --- Weight tracking ---
+
+def insert_weight(weight_kg: float, source: str = "manual",
+                  timestamp: Optional[str] = None) -> int:
+    ts = timestamp or datetime.now().isoformat()
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO weight_log (timestamp, weight_kg, source) VALUES (?,?,?)",
+            (ts, weight_kg, source),
+        )
+        return cur.lastrowid
+
+
+def get_latest_weight() -> Optional[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM weight_log ORDER BY timestamp DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def query_weight_log(start: str, end: str) -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM weight_log WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp",
+            (start, end),
+        )
+        return [dict(r) for r in cur.fetchall()]

@@ -1,0 +1,50 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "C:\\Users\\Wissenschaftswoche\\.ohos\\config\\default_WaterTracker_eHvfkrjnGLxiNsvZHvZgLztT5qet70fSJ1gA1XnX_78=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001956907A37DB2C542FDFF8932921084C4A2C8F80AAFF14846116B6BAA6E6D0555E9F17889FB0",
+          "profile": "C:\\Users\\Wissenschaftswoche\\.ohos\\config\\default_WaterTracker_eHvfkrjnGLxiNsvZHvZgLztT5qet70fSJ1gA1XnX_78=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:\\Users\\Wissenschaftswoche\\.ohos\\config\\default_WaterTracker_eHvfkrjnGLxiNsvZHvZgLztT5qet70fSJ1gA1XnX_78=.p12",
+          "storePassword": "00000019585C4AAEE9C268DBD2BE6FE24A1C5D7A517241899B00455F19906D66FD22B380B9DAA7E006"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "6.0.1(21)",
+        "targetSdkVersion": "6.0.1(21)",
+        "runtimeOS": "HarmonyOS"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

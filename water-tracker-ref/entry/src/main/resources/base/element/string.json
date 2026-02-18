@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Water Tracker for Huawei Watch"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Water Tracker Main Ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Water Tracker"
+    }
+  ]
+}

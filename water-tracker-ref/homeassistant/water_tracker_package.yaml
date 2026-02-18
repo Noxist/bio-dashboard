@@ -1,0 +1,114 @@
+# ============================================================================
+# Water Tracker -- Home Assistant Package Configuration
+# ============================================================================
+# Copy this file to your HA config/packages/ directory (or merge into
+# configuration.yaml).  Then restart Home Assistant.
+#
+# The watch app creates sensor.water_tracker_daily automatically via the
+# REST API. The config below adds:
+#   - A utility meter that resets the daily counter at midnight
+#   - Template sensors for dashboard display
+#   - Automations for hydration reminders and daily reset
+#   - A Lovelace card suggestion
+# ============================================================================
+
+# ------------------------------------------------------------------
+# 1. Template sensors (derived from the watch-pushed entity)
+# ------------------------------------------------------------------
+template:
+  - sensor:
+      - name: "Water Intake Percentage"
+        unique_id: water_intake_pct
+        unit_of_measurement: "%"
+        icon: mdi:cup-water
+        state: >
+          {% set intake = states('sensor.water_tracker_daily') | float(0) %}
+          {% set goal   = state_attr('sensor.water_tracker_daily', 'daily_goal') | float(2500) %}
+          {{ ((intake / goal) * 100) | round(0) }}
+
+      - name: "Water Intake Remaining"
+        unique_id: water_intake_remaining
+        unit_of_measurement: "ml"
+        icon: mdi:cup-outline
+        state: >
+          {% set intake = states('sensor.water_tracker_daily') | float(0) %}
+          {% set goal   = state_attr('sensor.water_tracker_daily', 'daily_goal') | float(2500) %}
+          {{ [goal - intake, 0] | max | round(0) }}
+
+      - name: "Water Goal Reached"
+        unique_id: water_goal_reached
+        icon: mdi:check-circle
+        state: >
+          {{ state_attr('sensor.water_tracker_daily', 'goal_reached') | default(false) }}
+
+# ------------------------------------------------------------------
+# 2. Input number -- lets you change the daily goal from the HA UI
+#    (the watch still stores its own copy; this is for dashboards)
+# ------------------------------------------------------------------
+input_number:
+  water_daily_goal:
+    name: Daily Water Goal
+    min: 500
+    max: 5000
+    step: 250
+    unit_of_measurement: ml
+    icon: mdi:target
+    initial: 2500
+
+# ------------------------------------------------------------------
+# 3. Automations
+# ------------------------------------------------------------------
+automation:
+  # Reminder every 2 hours between 08:00-22:00 if under 80 % of goal
+  - id: water_tracker_reminder
+    alias: "Water Tracker - Hydration Reminder"
+    trigger:
+      - platform: time_pattern
+        hours: "/2"
+        minutes: "0"
+    condition:
+      - condition: time
+        after: "08:00:00"
+        before: "22:00:00"
+      - condition: numeric_state
+        entity_id: sensor.water_intake_percentage
+        below: 80
+    action:
+      - service: notify.notify
+        data:
+          title: "Hydration Reminder"
+          message: >
+            You have had {{ states('sensor.water_tracker_daily') }} ml today.
+            {{ states('sensor.water_intake_remaining') }} ml left to reach your goal.
+
+  # Celebration when goal is reached
+  - id: water_tracker_goal_reached
+    alias: "Water Tracker - Goal Reached"
+    trigger:
+      - platform: state
+        entity_id: sensor.water_goal_reached
+        to: "True"
+    action:
+      - service: notify.notify
+        data:
+          title: "Daily Water Goal Reached"
+          message: >
+            Great job -- you hit {{ states('sensor.water_tracker_daily') }} ml today!
+
+# ------------------------------------------------------------------
+# 4. Lovelace card (manual YAML -- paste into a dashboard)
+# ------------------------------------------------------------------
+# type: entities
+# title: Water Tracker
+# show_header_toggle: false
+# entities:
+#   - entity: sensor.water_tracker_daily
+#     name: Intake Today
+#   - entity: sensor.water_intake_percentage
+#     name: Progress
+#   - entity: sensor.water_intake_remaining
+#     name: Remaining
+#   - entity: sensor.water_goal_reached
+#     name: Goal Reached
+#   - entity: input_number.water_daily_goal
+#     name: Daily Goal
