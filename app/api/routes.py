@@ -40,6 +40,7 @@ from app.core.database import (
     get_todays_water_total,
     get_last_water_event,
     delete_water_event,
+    reset_todays_water,
     upsert_water_goal,
     get_water_goal,
     get_water_goals_range,
@@ -58,6 +59,7 @@ from app.core.water_engine import (
     check_intake_velocity,
     detect_dehydration_from_vitals,
     hydration_bio_score_modifier,
+    generate_hydration_curve,
 )
 
 router = APIRouter(prefix="/api")
@@ -148,7 +150,7 @@ def log_intake(req: IntakeRequest):
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         intakes = query_intakes(f"{today}T00:00:00", f"{today}T23:59:59")
-        ddi_warnings = check_ddi_warnings(intakes, now)
+        ddi_warnings = check_ddi_warnings(intakes, now, weight_kg=_get_effective_weight())
 
     result = {"id": row_id, "substance": req.substance, "dose_mg": dose, "status": "ok"}
     if ddi_warnings:
@@ -266,6 +268,9 @@ def get_bio_score(
     today = target.strftime("%Y-%m-%d")
     intakes = query_intakes(f"{today}T00:00:00", f"{today}T23:59:59")
 
+    # Dynamic weight from DB / Google Fit
+    weight = _get_effective_weight()
+
     # Get health data (sleep + HRV) from latest snapshot if not provided
     hrv_ms = None
     resting_hr = None
@@ -283,6 +288,7 @@ def get_bio_score(
         hrv_ms=hrv_ms, resting_hr=resting_hr,
         water_intake_ml=get_todays_water_total(),
         water_goal_ml=_compute_today_goal().get("goal_ml"),
+        weight_kg=weight,
     )
     return result
 
@@ -306,6 +312,9 @@ def get_bio_curve(
     day_str = target_date.strftime("%Y-%m-%d")
     intakes = query_intakes(f"{day_str}T00:00:00", f"{day_str}T23:59:59")
 
+    # Dynamic weight from DB / Google Fit
+    weight = _get_effective_weight()
+
     # Health data (sleep + HRV)
     hrv_ms = None
     resting_hr = None
@@ -320,7 +329,7 @@ def get_bio_curve(
 
     curve = generate_day_curve(
         target_date, intakes, sleep_duration_min, sleep_confidence, interval,
-        hrv_ms=hrv_ms, resting_hr=resting_hr,
+        hrv_ms=hrv_ms, resting_hr=resting_hr, weight_kg=weight,
     )
     return {"date": day_str, "interval_minutes": interval, "points": curve}
 
@@ -513,12 +522,24 @@ async def water_report_endpoint(request: FastAPIRequest):
     import logging
     log = logging.getLogger("bio.water")
 
+    watch_intake = data.get("current_intake", 0)
     log.info(
         "Watch report: %d ml / %d ml (%d entries)",
-        data.get("current_intake", 0),
+        watch_intake,
         data.get("daily_goal", 0),
         data.get("entry_count", 0),
     )
+
+    # Persist watch intake delta to DB so dashboard + velocity checks stay in sync
+    if watch_intake > 0:
+        db_total = get_todays_water_total()
+        delta = watch_intake - db_total
+        if delta > 0:
+            insert_water_event(
+                delta, "watch",
+                f"auto-sync from {data.get('device_id', 'watch')}",
+            )
+            log.info("Persisted +%d ml delta (DB was %d, watch reports %d)", delta, db_total, watch_intake)
 
     return {"status": "ok"}
 
@@ -594,6 +615,13 @@ async def water_instruction_endpoint(
     # (only if different from what the watch currently has)
     target_override = computed_goal if computed_goal != daily_goal else 0
 
+    # Generate hydration curve with interval targets for the watch
+    curve_data = generate_hydration_curve(
+        current_intake_ml=intake,
+        goal_ml=computed_goal,
+        now=now,
+    )
+
     return {
         "message": message,
         "recommended_amount": amount,
@@ -601,6 +629,7 @@ async def water_instruction_endpoint(
         "deadline_minutes": deadline,
         "daily_target_override": target_override,
         "timestamp": now.isoformat(),
+        "hydration_curve": curve_data,
     }
 
 
@@ -654,6 +683,13 @@ def delete_water_intake(event_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Water event not found")
     return {"deleted": event_id, "status": "ok"}
+
+
+@router.post("/water/reset", dependencies=[Depends(verify_api_key)])
+def reset_water_today():
+    """Delete all water events for today, resetting intake to 0."""
+    count = reset_todays_water()
+    return {"deleted_count": count, "status": "ok"}
 
 
 @router.get("/water/goal", dependencies=[Depends(verify_api_key)])
@@ -777,7 +813,7 @@ def ddi_check():
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     intakes = query_intakes(f"{today}T00:00:00", f"{today}T23:59:59")
-    warnings = check_ddi_warnings(intakes, now)
+    warnings = check_ddi_warnings(intakes, now, weight_kg=_get_effective_weight())
     return {
         "timestamp": now.isoformat(),
         "warnings": warnings,

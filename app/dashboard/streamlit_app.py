@@ -1,12 +1,12 @@
 """
-Streamlit Bio-Dashboard -- Leandro Edition.
-Hauptseite: Schnelle Inputs (Einnahme, Befinden, Essen).
-Sidebar (Hamburger): Kurven, Vitals, Modell, Analyse, System.
-Mobile-first, no emojis.
+Streamlit Bio-Dashboard — Leandro Edition v3.
+Hauptseite: Schnelle Inputs (Einnahme, Befinden, Essen, Hydration).
+Sidebar (Hamburger): Kurven, Vitals, Modell, Korrelation, System.
+Mobile-first, proper German, no emojis.
 """
 
-import json
-from datetime import datetime, timedelta, time as dt_time
+import math
+from datetime import datetime, timedelta
 
 import httpx
 import pandas as pd
@@ -50,6 +50,30 @@ def api_delete(path: str) -> dict:
         return {}
 
 
+# --- Plotly mobile-friendly helper ---
+PLOTLY_MOBILE_CONFIG = {
+    "displayModeBar": False,
+    "scrollZoom": False,
+    "staticPlot": False,
+    "responsive": True,
+}
+
+PLOTLY_MOBILE_LAYOUT = dict(
+    dragmode=False,
+    template="plotly_dark",
+    margin=dict(l=40, r=20, t=40, b=35),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    xaxis=dict(fixedrange=True),
+    yaxis=dict(fixedrange=True),
+)
+
+
+def mobile_chart(fig, height=350, **kwargs):
+    """Render a Plotly chart with mobile-friendly settings (no accidental zoom/pan)."""
+    fig.update_layout(**PLOTLY_MOBILE_LAYOUT, height=height, **kwargs)
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_MOBILE_CONFIG)
+
+
 # --- Page Config ---
 st.set_page_config(
     page_title="Bio-Dashboard",
@@ -87,14 +111,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# SIDEBAR -- Hamburger Menu (Detail-Ansichten)
+# SIDEBAR — Navigation + Quick-Status
 # =========================================================
-PAGES = ["Logging", "Kurven & Timeline", "Vitals & Health", "Persoenl. Modell", "Korrelation", "System"]
+PAGES = [
+    "Logging",
+    "Hydration",
+    "Kurven & Timeline",
+    "Vitals & Health",
+    "Persönl. Modell",
+    "Korrelation",
+    "System",
+]
 PAGE_MAP = {
     "Logging": "main",
+    "Hydration": "hydration",
     "Kurven & Timeline": "kurven",
     "Vitals & Health": "vitals",
-    "Persoenl. Modell": "modell",
+    "Persönl. Modell": "modell",
     "Korrelation": "korrelation",
     "System": "system",
 }
@@ -103,7 +136,7 @@ with st.sidebar:
     st.header("Bio-Dashboard")
     sidebar_page = st.radio("Navigation", PAGES, index=0, label_visibility="collapsed")
     st.divider()
-    # Quick bio-score in sidebar
+    # Quick Bio-Score
     bio_sidebar = api_get("/api/bio-score")
     if isinstance(bio_sidebar, dict) and "score" in bio_sidebar:
         sc = bio_sidebar["score"]
@@ -111,8 +144,25 @@ with st.sidebar:
         st.metric("Bio-Score", f"{sc:.0f}/100")
         st.caption(f"Phase: {ph}")
         cns = bio_sidebar.get("cns_load", 0)
-        if cns > 1.5:
-            st.warning(f"CNS-Last: {cns:.1f}")
+        if cns > 0:
+            color = "normal" if cns < 1.5 else "inverse"
+            st.metric(
+                "ZNS-Belastung",
+                f"{cns:.1f}",
+                delta="OK" if cns < 1.5 else "Erhöht!",
+                delta_color=color,
+            )
+            st.caption(
+                "Summe aller aktiven Substanz-Level. "
+                "Unter 1.0 = entspannt, 1.0–1.5 = normal, über 1.5 = hohe Belastung."
+            )
+    # Quick water status
+    ws = api_get("/api/water/status")
+    if isinstance(ws, dict) and "intake_ml" in ws:
+        goal = ws.get("goal", {}).get("goal_ml", 3200)
+        intake = ws.get("intake_ml", 0)
+        pct = int(intake / goal * 100) if goal > 0 else 0
+        st.metric("Wasser", f"{intake} / {goal} ml", delta=f"{pct}%")
 
 current_page = PAGE_MAP.get(sidebar_page, "main")
 
@@ -132,12 +182,12 @@ if current_page == "main":
         st.progress(progress, text=f"Logs: {logs_done}/{target_logs}")
 
         if next_due["status"] == "due":
-            st.warning(f"Log faellig: {next_due['label']} ({next_due['target_time']})")
+            st.warning(f"Log fällig: {next_due['label']} ({next_due['target_time']})")
         else:
-            st.info(f"Naechster Log: {next_due['label']} um {next_due['target_time']}")
+            st.info(f"Nächster Log: {next_due['label']} um {next_due['target_time']}")
 
     # ---- SECTION 1: Einnahme ----
-    st.subheader("1 -- Einnahme")
+    st.subheader("1 — Einnahme")
     b1, b2 = st.columns(2)
     with b1:
         if st.button("Elvanse 40mg", use_container_width=True, type="primary"):
@@ -185,9 +235,9 @@ if current_page == "main":
                 st.success("Nachgetragen")
                 st.rerun()
 
-    # ---- SECTION 2: Wie fuehle ich mich ----
+    # ---- SECTION 2: Wie fühlst du dich? ----
     st.divider()
-    st.subheader("2 -- Wie fuehlst du dich?")
+    st.subheader("2 — Wie fühlst du dich?")
 
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
@@ -204,8 +254,8 @@ if current_page == "main":
         inner_unrest = st.slider("Innere Unruhe", 1, 10, 1, key="u")
 
     tag_options = [
-        "migraene", "kopfschmerzen", "uebelkeit",
-        "muede", "unruhig", "motiviert",
+        "migräne", "kopfschmerzen", "übelkeit",
+        "müde", "unruhig", "motiviert",
         "klar", "brain-fog", "angespannt", "entspannt",
         "kreativ", "gereizt", "produktiv", "abgelenkt",
     ]
@@ -223,7 +273,7 @@ if current_page == "main":
 
     # ---- SECTION 3: Essen ----
     st.divider()
-    st.subheader("3 -- Essen")
+    st.subheader("3 — Essen")
     meal_notes = st.text_input("Was? (optional)", key="mnotes", placeholder="Pizza, Salat...")
     ec1, ec2 = st.columns(2)
     with ec1:
@@ -232,10 +282,10 @@ if current_page == "main":
             if r.get("status") == "ok":
                 st.success("Mittagessen geloggt")
                 st.rerun()
-        if st.button("Fruehstueck", use_container_width=True):
+        if st.button("Frühstück", use_container_width=True):
             r = api_post("/api/meal", {"meal_type": "fruehstueck", "notes": meal_notes})
             if r.get("status") == "ok":
-                st.success("Fruehstueck geloggt")
+                st.success("Frühstück geloggt")
                 st.rerun()
     with ec2:
         if st.button("Abendessen", use_container_width=True):
@@ -254,7 +304,7 @@ if current_page == "main":
     st.subheader("Heute")
     tc1, tc2 = st.columns(2)
     with tc1:
-        st.caption("Intakes")
+        st.caption("Einnahmen")
         intakes = api_get("/api/intake", {"today": True})
         if isinstance(intakes, list) and intakes:
             for i in intakes:
@@ -271,7 +321,7 @@ if current_page == "main":
                         api_delete(f"/api/intake/{iid}")
                         st.rerun()
         else:
-            st.caption("--")
+            st.caption("—")
 
     with tc2:
         st.caption("Logs")
@@ -280,20 +330,20 @@ if current_page == "main":
             for lg in logs:
                 ts = lg.get("timestamp", "")[11:16]
                 lid = lg.get("id")
-                f = lg.get("focus", "?")
-                m = lg.get("mood", "?")
-                e = lg.get("energy", "?")
-                a = lg.get("appetite", "-")
-                u = lg.get("inner_unrest", "-")
+                f_val = lg.get("focus", "?")
+                m_val = lg.get("mood", "?")
+                e_val = lg.get("energy", "?")
+                a_val = lg.get("appetite", "-")
+                u_val = lg.get("inner_unrest", "-")
                 ec, dc = st.columns([5, 1])
                 with ec:
-                    st.text(f"{ts} F:{f} M:{m} E:{e} A:{a} U:{u}")
+                    st.text(f"{ts} F:{f_val} M:{m_val} E:{e_val} A:{a_val} U:{u_val}")
                 with dc:
                     if st.button("X", key=f"dl_{lid}"):
                         api_delete(f"/api/log/{lid}")
                         st.rerun()
         else:
-            st.caption("--")
+            st.caption("—")
 
     # Meals today
     meals = api_get("/api/meal", {"today": "true"})
@@ -315,9 +365,269 @@ if current_page == "main":
 
 
 # =========================================================
+# PAGE: Hydration (NEU)
+# =========================================================
+elif current_page == "hydration":
+    st.header("Hydration")
+
+    # --- Fetch all water data ---
+    ws = api_get("/api/water/status")
+
+    if isinstance(ws, dict) and "goal" in ws:
+        goal_data = ws["goal"]
+        goal_ml = goal_data.get("goal_ml", 3200)
+        intake_ml = ws.get("intake_ml", 0)
+        assessment = ws.get("assessment", {})
+        velocity = ws.get("velocity", {})
+        dehydration = ws.get("dehydration", {})
+
+        # ---- Fortschritt ----
+        pct = int(intake_ml / goal_ml * 100) if goal_ml > 0 else 0
+        remaining = max(0, goal_ml - intake_ml)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Getrunken", f"{intake_ml} ml")
+        m2.metric("Tagesziel", f"{goal_ml} ml")
+        m3.metric("Fortschritt", f"{pct}%")
+        m4.metric("Verbleibend", f"{remaining} ml")
+
+        st.progress(min(pct / 100.0, 1.0), text=f"{intake_ml} / {goal_ml} ml ({pct}%)")
+
+        # ---- Tagesziel-Aufschlüsselung ----
+        with st.expander("Tagesziel-Berechnung"):
+            base = goal_data.get("base_ml", 0)
+            drug = goal_data.get("drug_modifier_ml", 0)
+            fasting = goal_data.get("fasting_modifier_ml", 0)
+            activity = goal_data.get("activity_modifier_ml", 0)
+            weight = goal_data.get("weight_kg", 96)
+            steps = goal_data.get("steps", 0)
+
+            st.markdown(f"""
+| Komponente | Wert |
+|---|---|
+| **Basis** ({weight:.1f} kg × 33.3 ml/kg) | {base} ml |
+| **Elvanse** (+110 ml REE-Steigerung) | {'+' + str(drug) if drug > 0 else '—'} ml |
+| **OMAD-Fasten** (+500 ml Feuchtigkeitsdefizit) | {'+' + str(fasting) if fasting > 0 else '—'} ml |
+| **Aktivität** ({steps} Schritte, +60 ml/1k über 4000) | {'+' + str(activity) if activity > 0 else '—'} ml |
+| **Gesamt** | **{goal_ml} ml** |
+""")
+
+        # ---- Coaching / Status ----
+        status = assessment.get("status", "on_track")
+        msg = assessment.get("message", "")
+        priority = assessment.get("priority", "none")
+
+        if msg:
+            if priority in ("critical", "high"):
+                st.error(msg)
+            elif priority == "normal":
+                st.warning(msg)
+            else:
+                st.info(msg)
+
+        # ---- Sicherheits-Warnungen ----
+        if velocity.get("alert"):
+            st.error(velocity.get("message", "Trinkgeschwindigkeit zu hoch!"))
+        else:
+            last60 = velocity.get("last_60min_ml", 0)
+            if last60 > 0:
+                max_h = velocity.get("max_hourly_ml", 800)
+                vel_pct = int(last60 / max_h * 100)
+                st.caption(f"Letzte 60 Min: {last60} ml / {max_h} ml Nierenlimit ({vel_pct}%)")
+
+        if dehydration.get("alert"):
+            st.error(dehydration.get("message", "Dehydrierungs-Warnung!"))
+
+        # ---- Pacing-Monitor (linear) ----
+        st.divider()
+        st.subheader("Pacing-Monitor")
+        st.caption(
+            "Soll-Kurve (blau) vs. Ist-Intake (grün). "
+            "Lineares Pacing über den Tag verteilt."
+        )
+
+        now = datetime.now()
+        current_hour = now.hour + now.minute / 60.0
+        wake_h = 7.0
+        sleep_h = 23.0
+
+        # Linear expected curve (same as water_engine.py)
+        hours_range = [h * 0.25 for h in range(int(wake_h * 4), int(sleep_h * 4) + 1)]
+        expected_curve = []
+        for h in hours_range:
+            if h <= wake_h:
+                expected_curve.append(0)
+                continue
+            if h >= sleep_h:
+                expected_curve.append(goal_ml)
+                continue
+            waking_total = sleep_h - wake_h
+            elapsed = h - wake_h
+            progress_val = elapsed / waking_total
+            expected_curve.append(int(goal_ml * progress_val))
+
+        fig_pace = go.Figure()
+
+        # Expected pacing (S-curve)
+        fig_pace.add_trace(go.Scatter(
+            x=hours_range,
+            y=expected_curve,
+            mode="lines",
+            name="Soll (Pacing)",
+            line=dict(color="#4FC3F7", width=2, dash="dash"),
+            fill="tozeroy",
+            fillcolor="rgba(79, 195, 247, 0.08)",
+        ))
+
+        # Actual intake events as cumulative step line
+        events = api_get("/api/water/intake", {"today": "true"})
+        if isinstance(events, list) and events:
+            cumulative = 0
+            event_hours = [wake_h]
+            event_totals = [0]
+            for ev in sorted(events, key=lambda e: e.get("timestamp", "")):
+                ts = ev.get("timestamp", "")
+                try:
+                    t = datetime.fromisoformat(ts)
+                    h = t.hour + t.minute / 60.0
+                except (ValueError, TypeError):
+                    continue
+                cumulative += ev.get("amount_ml", 0)
+                event_hours.append(h)
+                event_totals.append(cumulative)
+            # Extend to current time
+            event_hours.append(current_hour)
+            event_totals.append(cumulative)
+
+            fig_pace.add_trace(go.Scatter(
+                x=event_hours,
+                y=event_totals,
+                mode="lines+markers",
+                name="Ist (Getrunken)",
+                line=dict(color="#4CAF50", width=3, shape="hv"),
+                marker=dict(size=6),
+            ))
+
+        # Current time marker
+        fig_pace.add_vline(
+            x=current_hour,
+            line=dict(color="#F44336", width=2),
+            annotation_text="Jetzt",
+            annotation_font=dict(color="#F44336"),
+        )
+
+        # Goal line
+        fig_pace.add_hline(
+            y=goal_ml,
+            line=dict(color="#FF9800", width=1, dash="dot"),
+            annotation_text=f"Ziel: {goal_ml} ml",
+            annotation_font=dict(color="#FF9800"),
+        )
+
+        # 15/30/45/60 min target markers ahead of current time
+        if current_hour >= wake_h and current_hour < sleep_h:
+            waking_total = sleep_h - wake_h
+            target_colors = ["#AB47BC", "#7E57C2", "#5C6BC0", "#42A5F5"]
+            for i, minutes in enumerate([15, 30, 45, 60]):
+                t_hour = min(current_hour + minutes / 60.0, sleep_h)
+                t_progress = (t_hour - wake_h) / waking_total
+                t_ml = int(goal_ml * t_progress)
+                label = f"{minutes}'" if minutes < 60 else "1h"
+                fig_pace.add_trace(go.Scatter(
+                    x=[t_hour], y=[t_ml],
+                    mode="markers+text",
+                    name=f"Ziel {label}",
+                    marker=dict(color=target_colors[i], size=10, symbol="diamond"),
+                    text=[f"{label}: {t_ml} ml"],
+                    textposition="top center",
+                    textfont=dict(size=10, color=target_colors[i]),
+                    showlegend=False,
+                ))
+
+        fig_pace.update_layout(
+            title="Trink-Pacing (Soll vs. Ist)",
+            xaxis_title="Uhrzeit",
+            yaxis_title="ml (kumuliert)",
+            xaxis=dict(
+                tickmode="array",
+                tickvals=list(range(7, 24)),
+                ticktext=[f"{h}:00" for h in range(7, 24)],
+            ),
+        )
+        mobile_chart(fig_pace, height=380)
+
+        # ---- Quick-Add Wasser ----
+        st.divider()
+        st.subheader("Wasser loggen")
+        wa1, wa2, wa3, wa4 = st.columns(4)
+        with wa1:
+            if st.button("100 ml", use_container_width=True):
+                api_post("/api/water/intake", {"amount_ml": 100})
+                st.rerun()
+        with wa2:
+            if st.button("250 ml", use_container_width=True, type="primary"):
+                api_post("/api/water/intake", {"amount_ml": 250})
+                st.rerun()
+        with wa3:
+            if st.button("500 ml", use_container_width=True, type="primary"):
+                api_post("/api/water/intake", {"amount_ml": 500})
+                st.rerun()
+        with wa4:
+            custom_ml = st.number_input("ml", min_value=25, max_value=1500, value=330, step=25, key="wc_ml", label_visibility="collapsed")
+            if st.button("Log", use_container_width=True, key="wc_log"):
+                api_post("/api/water/intake", {"amount_ml": custom_ml})
+                st.rerun()
+
+        # ---- Reset ----
+        with st.expander("Wasser zurücksetzen"):
+            st.warning("Löscht **alle** heutigen Wasser-Einträge und setzt auf 0 ml zurück.")
+            if st.button("Heute zurücksetzen", type="primary", key="water_reset"):
+                api_post("/api/water/reset", {})
+                st.success("Wasser auf 0 ml zurückgesetzt!")
+                st.rerun()
+
+        # ---- Heutige Einträge ----
+        if isinstance(events, list) and events:
+            with st.expander(f"Heutige Einträge ({len(events)})"):
+                for ev in reversed(events):
+                    ts = ev.get("timestamp", "")[11:16]
+                    ml = ev.get("amount_ml", 0)
+                    src = ev.get("source", "")
+                    eid = ev.get("id")
+                    ec, dc = st.columns([5, 1])
+                    with ec:
+                        st.text(f"{ts}  +{ml} ml  ({src})")
+                    with dc:
+                        if st.button("X", key=f"dw_{eid}"):
+                            api_delete(f"/api/water/intake/{eid}")
+                            st.rerun()
+
+        # ---- Gewicht ----
+        st.divider()
+        st.subheader("Gewicht")
+        weight_data = api_get("/api/weight/latest")
+        if isinstance(weight_data, dict) and weight_data.get("found"):
+            wkg = weight_data.get("weight_kg", "?")
+            wsrc = weight_data.get("source", "?")
+            st.metric("Aktuelles Gewicht", f"{wkg} kg", delta=f"Quelle: {wsrc}")
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            new_w = st.number_input("Neues Gewicht (kg)", min_value=50.0, max_value=200.0, value=96.0, step=0.1, key="nw")
+        with wc2:
+            st.write("")
+            st.write("")
+            if st.button("Gewicht speichern", use_container_width=True):
+                api_post("/api/weight", {"weight_kg": new_w})
+                st.success(f"Gewicht {new_w} kg gespeichert")
+                st.rerun()
+    else:
+        st.warning("Keine Wasser-Daten verfügbar. Ist das Bio-Dashboard API erreichbar?")
+
+
+# =========================================================
 # PAGE: Kurven & Timeline
 # =========================================================
-if current_page == "kurven":
+elif current_page == "kurven":
     st.header("Kurven & Timeline")
 
     date = st.date_input("Datum", value=datetime.now().date(), key="tl_date")
@@ -331,8 +641,7 @@ if current_page == "kurven":
 
         if not df.empty:
             df["time"] = pd.to_datetime(df["timestamp"])
-            now = datetime.now()
-            is_today = date == now.date()
+            is_today = date == datetime.now().date()
 
             # -- Bio-Score + Substanz-Kurven --
             fig = go.Figure()
@@ -364,15 +673,19 @@ if current_page == "kurven":
                 line=dict(color="#FF9800", width=2),
             ))
 
-            def _vmark(fig, x, color, dash, w, text, pos="top right"):
-                fig.add_shape(type="line", x0=x, x1=x, y0=0, y1=1,
-                    yref="paper", line=dict(color=color, width=w, dash=dash))
-                fig.add_annotation(x=x, y=1, yref="paper", text=text,
+            def _vmark(fig_ref, x, color, dash, w, text, anchor="left"):
+                fig_ref.add_shape(
+                    type="line", x0=x, x1=x, y0=0, y1=1,
+                    yref="paper", line=dict(color=color, width=w, dash=dash),
+                )
+                fig_ref.add_annotation(
+                    x=x, y=1, yref="paper", text=text,
                     showarrow=False, font=dict(color=color, size=9),
-                    xanchor="left" if "left" in pos else "right", yanchor="bottom")
+                    xanchor=anchor, yanchor="bottom",
+                )
 
             if is_today:
-                _vmark(fig, now, "#F44336", "solid", 2, "Jetzt", "top left")
+                _vmark(fig, datetime.now(), "#F44336", "solid", 2, "Jetzt")
 
             # Intake markers
             day_intakes = api_get("/api/intake", {"start": f"{date_str}T00:00:00", "end": f"{date_str}T23:59:59"})
@@ -398,17 +711,19 @@ if current_page == "kurven":
                     ))
 
             fig.update_layout(
-                title=f"Tagesverlauf -- {date_str}",
+                title=f"Tagesverlauf — {date_str}",
                 xaxis_title="Uhrzeit", yaxis_title="Score / Boost",
-                yaxis=dict(range=[0, 105]), height=420,
-                template="plotly_dark",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(l=40, r=20, t=55, b=35),
+                yaxis=dict(range=[0, 105]),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            mobile_chart(fig, height=420)
 
-            # -- Einzelne Substanz-Level-Kurven --
-            st.subheader("Substanz-Level (normalisiert 0-1)")
+            # -- Substanz-Level + ZNS-Last --
+            st.subheader("Substanz-Level & ZNS-Belastung")
+            st.caption(
+                "Normalisierte Wirkstoff-Level (0–1). "
+                "ZNS-Belastung = Summe aller aktiven Substanzen. "
+                "Über 1.5 = erhöhte ZNS-Belastung (Unruhe, Herzrasen möglich)."
+            )
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(
                 x=df["time"], y=df["elvanse_level"],
@@ -429,52 +744,69 @@ if current_page == "kurven":
             if "cns_load" in df.columns:
                 fig2.add_trace(go.Scatter(
                     x=df["time"], y=df["cns_load"],
-                    mode="lines", name="CNS-Last (Summe)",
-                    line=dict(color="#F44336", width=2, dash="dash"),
+                    mode="lines", name="ZNS-Belastung",
+                    line=dict(color="#F44336", width=3, dash="dash"),
+                    fill="tozeroy", fillcolor="rgba(244,67,54,0.06)",
                 ))
-                fig2.add_hline(y=1.5, line=dict(color="#FFC107", width=1, dash="dot"),
-                    annotation_text="Warnschwelle")
+                fig2.add_hline(
+                    y=1.5, line=dict(color="#FFC107", width=1, dash="dot"),
+                    annotation_text="Warnschwelle 1.5",
+                )
 
             if is_today:
-                _vmark(fig2, now, "#F44336", "solid", 1, "Jetzt", "top left")
+                _vmark(fig2, datetime.now(), "#F44336", "solid", 1, "Jetzt")
 
             fig2.update_layout(
-                xaxis_title="Uhrzeit", yaxis_title="Level (0-1)",
-                yaxis=dict(range=[0, 2.5]), height=350,
-                template="plotly_dark",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                margin=dict(l=40, r=20, t=30, b=35),
+                xaxis_title="Uhrzeit", yaxis_title="Level (0–1) / ZNS",
+                yaxis=dict(range=[0, 2.5]),
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            mobile_chart(fig2, height=350)
         else:
             st.info("Keine Daten")
 
-    # PK-Erklaerung
+    # PK-Erklärung (aktualisiert für 3-Stage Cascade)
     st.divider()
     st.subheader("So funktioniert das Modell")
     st.markdown("""
-**Bateman-Funktion**: Jede Substanz hat eine Absorptionsrate (ka) und Eliminationsrate (ke).
-Die Konzentrationskurve ergibt sich aus:
+**Elvanse (Lisdexamfetamin)** — Drei-Stufen-Kaskadenmodell:
 
-`C(t) = (ka / (ka - ke)) * (exp(-ke*t) - exp(-ka*t))`
+1. **GI-Absorption** — Aufnahme über PEPT1-Transporter im Darm
+2. **Erythrozyten-Hydrolyse** — Enzymatische Spaltung zu d-Amphetamin im Blut
+3. **Elimination** — Renale Ausscheidung von d-Amphetamin
 
-Normalisiert auf Peak = 1.0. Bei Mehrfacheinnahmen werden die Kurven linear ueberlagert (Superposition).
+Jede Stufe hat eine eigene Geschwindigkeitskonstante (k\_abs, k\_hyd, k\_e).
+Die Gesamtlösung ist eine 3-Kompartiment-Kaskade:
 
-Der **Bio-Score** kombiniert:
-- Circadian-Rhythmus (Tageszeit-abhaengige Baseline, 0-60 Punkte)
-- Elvanse-Boost (0-30 Punkte bei voller Wirkung)
-- Medikinet-Boost (0-25 Punkte)
-- Koffein-Boost (0-15 Punkte)
-- Schlaf-Modifier (-20 bis +10 Punkte)
+> A(t) = G₀ · k\_abs · k\_hyd · Σ\[ e^(−rᵢ·t) / Π(rⱼ − rᵢ) \]
 
-Die **CNS-Last** ist die Summe aller normalisierten Substanz-Level. Ueber 1.5 = erhoehte Belastung.
+Das ergibt eine breitere, flachere Kurve als ein einfaches Bateman-Modell —
+typisch für Elvanse mit dem verzögerten Prodrug-Mechanismus (Tmax ≈ 3.8h statt 1–2h).
+
+---
+
+**Medikinet, Koffein, Co-Dafalgan** — Klassische Bateman-Funktion:
+
+> C(t) = (ka / (ka − ke)) · (e^(−ke·t) − e^(−ka·t))
+
+Normalisiert auf Peak = 1.0. Bei Mehrfacheinnahmen: lineare Superposition.
+
+---
+
+**Allometrische Skalierung** (96 kg → 70 kg Referenz):
+- Cmax\_user = Cmax\_ref × (70 / Gewicht) — Verteilungsvolumen ∝ Gewicht
+- Clearance = CL\_ref × (Gewicht / 70)^0.75
+
+**ZNS-Belastung** = Summe aller normalisierten Substanz-Level:
+- < 1.0: Entspannt
+- 1.0–1.5: Normaler Arbeitsbereich
+- \> 1.5: Erhöhte Belastung — Unruhe, schneller Puls möglich
 """)
 
     pk_data = {
-        "Elvanse": {"ka": "0.78 h-1", "ke": "0.088 h-1", "Tmax": "3.8h", "t1/2": "~10h"},
-        "Medikinet IR": {"ka": "1.72 h-1", "ke": "0.28 h-1", "Tmax": "1.5h", "t1/2": "2.5h"},
-        "Med. retard": {"ka": "1.2 h-1 (nuechtern)", "ke": "0.28 h-1", "Tmax": "2h", "t1/2": "2.5h"},
-        "Koffein": {"ka": "2.5 h-1", "ke": "0.16 h-1", "Tmax": "0.75h", "t1/2": "4.3h"},
+        "Elvanse (Cascade)": {"Modell": "3-Stufen-Kaskade", "k_abs": "0.78 h⁻¹", "k_hyd": "0.78 h⁻¹", "k_e": "0.088 h⁻¹", "Tmax": "≈3.8h", "t½": "≈10h"},
+        "Medikinet IR": {"Modell": "Bateman", "ka": "1.72 h⁻¹", "k_hyd": "—", "k_e": "0.28 h⁻¹", "Tmax": "≈1.5h", "t½": "≈2.5h"},
+        "Med. retard": {"Modell": "Bateman (nüchtern)", "ka": "1.2 h⁻¹", "k_hyd": "—", "k_e": "0.28 h⁻¹", "Tmax": "≈2h", "t½": "≈2.5h"},
+        "Koffein (Mate)": {"Modell": "Bateman", "ka": "2.5 h⁻¹", "k_hyd": "—", "k_e": "0.16 h⁻¹", "Tmax": "≈0.75h", "t½": "≈4.3h"},
     }
     st.dataframe(pd.DataFrame(pk_data).T, use_container_width=True)
 
@@ -482,7 +814,7 @@ Die **CNS-Last** ist die Summe aller normalisierten Substanz-Level. Ueber 1.5 = 
 # =========================================================
 # PAGE: Vitals & Health
 # =========================================================
-if current_page == "vitals":
+elif current_page == "vitals":
     st.header("Vitals & Health")
 
     # Latest snapshot
@@ -492,23 +824,30 @@ if current_page == "vitals":
         hr = latest_h.get("heart_rate")
         rhr = latest_h.get("resting_hr")
         hrv = latest_h.get("hrv")
-        sleep = latest_h.get("sleep_duration")
+        sleep_dur = latest_h.get("sleep_duration")
         spo2 = latest_h.get("spo2")
-        steps = latest_h.get("steps")
+        steps_val = latest_h.get("steps")
         cals = latest_h.get("calories")
 
-        if hr: v1.metric("HR", f"{hr:.0f} bpm")
-        if rhr: v2.metric("Resting HR", f"{rhr:.0f} bpm")
-        if hrv: v3.metric("HRV", f"{hrv:.0f} ms")
-        if sleep: v4.metric("Schlaf", f"{sleep/60:.1f}h")
+        if hr:
+            v1.metric("HR", f"{hr:.0f} bpm")
+        if rhr:
+            v2.metric("Ruhe-HR", f"{rhr:.0f} bpm")
+        if hrv:
+            v3.metric("HRV", f"{hrv:.0f} ms")
+        if sleep_dur:
+            v4.metric("Schlaf", f"{sleep_dur / 60:.1f}h")
 
-        v5, v6, v7, v8 = st.columns(4)
-        if spo2: v5.metric("SpO2", f"{spo2:.0f}%")
-        if steps: v6.metric("Schritte", f"{int(steps)}")
-        if cals: v7.metric("Kalorien", f"{cals:.0f} kcal")
+        v5, v6, v7, _ = st.columns(4)
+        if spo2:
+            v5.metric("SpO2", f"{spo2:.0f}%")
+        if steps_val:
+            v6.metric("Schritte", f"{int(steps_val)}")
+        if cals:
+            v7.metric("Kalorien", f"{cals:.0f} kcal")
 
         ts_str = latest_h.get("timestamp", "")
-        st.caption(f"Aktualisiert: {ts_str[11:16] if len(ts_str)>16 else ts_str} (alle 15 Min)")
+        st.caption(f"Aktualisiert: {ts_str[11:16] if len(ts_str) > 16 else ts_str} (alle 15 Min)")
     else:
         st.info("Noch keine Daten")
 
@@ -525,39 +864,42 @@ if current_page == "vitals":
         with h1:
             if "heart_rate" in hdf.columns and hdf["heart_rate"].notna().any():
                 fig_hr = go.Figure()
-                fig_hr.add_trace(go.Scatter(x=hdf["time"], y=hdf["heart_rate"],
-                    mode="lines+markers", line=dict(color="#F44336")))
-                fig_hr.update_layout(title="Herzfrequenz", yaxis_title="bpm",
-                    height=280, template="plotly_dark", margin=dict(l=40,r=20,t=40,b=30))
-                st.plotly_chart(fig_hr, use_container_width=True)
+                fig_hr.add_trace(go.Scatter(
+                    x=hdf["time"], y=hdf["heart_rate"],
+                    mode="lines+markers", line=dict(color="#F44336"),
+                ))
+                fig_hr.update_layout(title="Herzfrequenz", yaxis_title="bpm")
+                mobile_chart(fig_hr, height=280)
         with h2:
             if "hrv" in hdf.columns and hdf["hrv"].notna().any():
                 fig_hrv = go.Figure()
-                fig_hrv.add_trace(go.Scatter(x=hdf["time"], y=hdf["hrv"],
-                    mode="lines+markers", line=dict(color="#3F51B5")))
-                fig_hrv.update_layout(title="HRV", yaxis_title="ms",
-                    height=280, template="plotly_dark", margin=dict(l=40,r=20,t=40,b=30))
-                st.plotly_chart(fig_hrv, use_container_width=True)
+                fig_hrv.add_trace(go.Scatter(
+                    x=hdf["time"], y=hdf["hrv"],
+                    mode="lines+markers", line=dict(color="#3F51B5"),
+                ))
+                fig_hrv.update_layout(title="HRV", yaxis_title="ms")
+                mobile_chart(fig_hrv, height=280)
 
         if "steps" in hdf.columns and hdf["steps"].notna().any():
             fig_steps = go.Figure()
-            fig_steps.add_trace(go.Bar(x=hdf["time"], y=hdf["steps"],
-                marker_color="#4CAF50"))
-            fig_steps.update_layout(title="Schritte", yaxis_title="Steps",
-                height=250, template="plotly_dark", margin=dict(l=40,r=20,t=40,b=30))
-            st.plotly_chart(fig_steps, use_container_width=True)
+            fig_steps.add_trace(go.Bar(
+                x=hdf["time"], y=hdf["steps"],
+                marker_color="#4CAF50",
+            ))
+            fig_steps.update_layout(title="Schritte", yaxis_title="Steps")
+            mobile_chart(fig_steps, height=250)
     else:
-        st.info("Keine Daten fuer diesen Tag")
+        st.info("Keine Daten für diesen Tag")
 
 
 # =========================================================
-# PAGE: Persoenliches Modell
+# PAGE: Persönliches Modell
 # =========================================================
-if current_page == "modell":
-    st.header("Persoenliches Modell")
+elif current_page == "modell":
+    st.header("Persönliches Modell")
     st.caption(
         "Analysiert deine Fokus-Ratings relativ zu Elvanse-Einnahmen. "
-        "Je mehr Daten, desto praeziser die persoenliche Wirkungskurve."
+        "Je mehr Daten, desto präziser die persönliche Wirkungskurve."
     )
 
     model_data = api_get("/api/model/fit")
@@ -569,24 +911,10 @@ if current_page == "modell":
 
         st.progress(min(pc / max(req, 1), 1.0), text=f"Datenpunkte: {pc}/{req}")
 
+        collected = model_data.get("collected_pairs", [])
+
         if ms == "insufficient_data":
             st.warning(model_data.get("message", "Nicht genug Daten."))
-            collected = model_data.get("collected_pairs", [])
-            if collected:
-                cpdf = pd.DataFrame(collected)
-                fig_m = go.Figure()
-                fig_m.add_trace(go.Scatter(x=cpdf["offset_h"], y=cpdf["focus"],
-                    mode="markers", marker=dict(size=10, color="#2196F3", opacity=0.7),
-                    name="Fokus-Rating"))
-                fig_m.add_trace(go.Scatter(x=cpdf["offset_h"],
-                    y=cpdf["predicted_level"].apply(lambda x: x * 10),
-                    mode="lines", line=dict(color="#FF9800", width=2, dash="dash"),
-                    name="Theoretische Kurve"))
-                fig_m.update_layout(xaxis_title="h nach Elvanse",
-                    yaxis_title="Fokus / Level x10",
-                    height=350, template="plotly_dark",
-                    margin=dict(l=40,r=20,t=30,b=40))
-                st.plotly_chart(fig_m, use_container_width=True)
 
         elif ms == "ok":
             st.success("Modell berechnet!")
@@ -597,97 +925,133 @@ if current_page == "modell":
             r3.metric("Schwelle", f"{thr:.2f}" if thr else "?")
             st.info(model_data.get("recommendation", ""))
 
-            collected = model_data.get("collected_pairs", [])
-            if collected:
-                cpdf = pd.DataFrame(collected)
-                fig_m = go.Figure()
-                fig_m.add_trace(go.Scatter(x=cpdf["offset_h"], y=cpdf["focus"],
-                    mode="markers", marker=dict(size=10, color="#2196F3", opacity=0.7),
-                    name="Deine Ratings"))
-                fig_m.add_trace(go.Scatter(x=cpdf["offset_h"],
+        # Plot data regardless of status (as long as we have pairs)
+        if collected:
+            cpdf = pd.DataFrame(collected).sort_values("offset_h")
+
+            fig_m = go.Figure()
+
+            # Scatter: individual focus ratings
+            fig_m.add_trace(go.Scatter(
+                x=cpdf["offset_h"], y=cpdf["focus"],
+                mode="markers",
+                marker=dict(size=10, color="#2196F3", opacity=0.7),
+                name="Fokus-Rating",
+            ))
+
+            # Smooth model curve from predicted_level
+            if "predicted_level" in cpdf.columns:
+                # Sort and use line to get a proper curve
+                fig_m.add_trace(go.Scatter(
+                    x=cpdf["offset_h"],
                     y=cpdf["predicted_level"].apply(lambda x: x * 10),
-                    mode="lines", line=dict(color="#FF9800", width=2),
-                    name="Modell"))
-                if thr:
-                    fig_m.add_hline(y=7, line=dict(color="#4CAF50", width=1, dash="dash"),
-                        annotation_text="Fokus >= 7")
-                fig_m.update_layout(xaxis_title="h nach Elvanse",
-                    yaxis_title="Fokus / Level x10",
-                    height=400, template="plotly_dark",
-                    margin=dict(l=40,r=20,t=30,b=40))
-                st.plotly_chart(fig_m, use_container_width=True)
+                    mode="lines",
+                    line=dict(color="#FF9800", width=2, shape="spline"),
+                    name="Modell-Kurve (×10)",
+                ))
+
+            if ms == "ok" and model_data.get("personal_threshold"):
+                fig_m.add_hline(
+                    y=7,
+                    line=dict(color="#4CAF50", width=1, dash="dash"),
+                    annotation_text="Fokus ≥ 7",
+                )
+
+            fig_m.update_layout(
+                xaxis_title="Stunden nach Elvanse",
+                yaxis_title="Fokus / Level ×10",
+                yaxis=dict(range=[0, 11]),
+            )
+            mobile_chart(fig_m, height=400)
+
+            with st.expander("Datenpunkte"):
+                st.dataframe(
+                    cpdf[["offset_h", "focus", "predicted_level"]].rename(columns={
+                        "offset_h": "Stunden nach ELV",
+                        "focus": "Fokus",
+                        "predicted_level": "Modell-Level",
+                    }),
+                    use_container_width=True,
+                )
 
 
 # =========================================================
 # PAGE: Korrelation
 # =========================================================
-if current_page == "korrelation":
+elif current_page == "korrelation":
     st.header("Korrelationsanalyse")
 
-    days_back = st.slider("Tage zurueck", 7, 90, 30, key="corr_d")
-    now = datetime.now()
-    start = (now - timedelta(days=days_back)).isoformat()
-    end = now.isoformat()
+    days_back = st.slider("Tage zurück", 7, 90, 30, key="corr_d")
+    now_ts = datetime.now()
+    start = (now_ts - timedelta(days=days_back)).isoformat()
+    end = now_ts.isoformat()
 
-    intakes = api_get("/api/intake", {"start": start, "end": end})
-    logs = api_get("/api/log", {"start": start, "end": end})
-    health = api_get("/api/health", {"start": start, "end": end})
+    intakes_corr = api_get("/api/intake", {"start": start, "end": end})
+    logs_corr = api_get("/api/log", {"start": start, "end": end})
+    health_corr = api_get("/api/health", {"start": start, "end": end})
 
-    if not isinstance(intakes, list) or not isinstance(logs, list):
-        st.warning("Nicht genuegend Daten")
+    if not isinstance(intakes_corr, list) or not isinstance(logs_corr, list):
+        st.warning("Nicht genügend Daten")
     else:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Elvanse vs. Fokus")
             pairs = []
-            ei_list = [i for i in intakes if i.get("substance") == "elvanse"]
-            for lg in logs:
+            ei_list = [i for i in intakes_corr if i.get("substance") == "elvanse"]
+            for lg in logs_corr:
                 lt = datetime.fromisoformat(lg["timestamp"])
                 foc = lg.get("focus")
-                if foc is None: continue
+                if foc is None:
+                    continue
                 best = None
                 for ei in ei_list:
                     et = datetime.fromisoformat(ei["timestamp"])
                     off = (lt - et).total_seconds() / 3600
                     if 0 <= off <= 16:
-                        if best is None or off < best: best = off
+                        if best is None or off < best:
+                            best = off
                 if best is not None:
                     pairs.append({"offset_h": best, "focus": foc})
 
             if pairs:
-                pdf = pd.DataFrame(pairs)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=pdf["offset_h"], y=pdf["focus"],
-                    mode="markers", marker=dict(size=8, color="#2196F3", opacity=0.7)))
-                fig.update_layout(xaxis_title="h nach Elvanse", yaxis_title="Fokus",
-                    height=350, template="plotly_dark", margin=dict(l=40,r=20,t=30,b=40))
-                st.plotly_chart(fig, use_container_width=True)
+                pairs_df = pd.DataFrame(pairs)
+                fig_c = go.Figure()
+                fig_c.add_trace(go.Scatter(
+                    x=pairs_df["offset_h"], y=pairs_df["focus"],
+                    mode="markers",
+                    marker=dict(size=8, color="#2196F3", opacity=0.7),
+                ))
+                fig_c.update_layout(xaxis_title="h nach Elvanse", yaxis_title="Fokus")
+                mobile_chart(fig_c, height=350)
             else:
                 st.info("Noch keine Paare")
 
         with c2:
             st.subheader("Schlaf vs. Fokus")
-            if isinstance(health, list) and health:
+            if isinstance(health_corr, list) and health_corr:
                 sbd = {}
-                for h in health:
-                    d = h["timestamp"][:10]
+                for h in health_corr:
+                    d_key = h["timestamp"][:10]
                     sd = h.get("sleep_duration")
-                    if sd: sbd[d] = sd
+                    if sd:
+                        sbd[d_key] = sd
                 sfp = []
-                for lg in logs:
+                for lg in logs_corr:
                     ld = lg["timestamp"][:10]
                     pd_day = (datetime.fromisoformat(ld) - timedelta(days=1)).strftime("%Y-%m-%d")
                     foc = lg.get("focus")
                     if foc and pd_day in sbd:
-                        sfp.append({"sleep_h": sbd[pd_day]/60, "focus": foc})
+                        sfp.append({"sleep_h": sbd[pd_day] / 60, "focus": foc})
                 if sfp:
                     sdf = pd.DataFrame(sfp)
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=sdf["sleep_h"], y=sdf["focus"],
-                        mode="markers", marker=dict(size=8, color="#4CAF50", opacity=0.7)))
-                    fig.update_layout(xaxis_title="Schlaf (h Vornacht)", yaxis_title="Fokus",
-                        height=350, template="plotly_dark", margin=dict(l=40,r=20,t=30,b=40))
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig_s = go.Figure()
+                    fig_s.add_trace(go.Scatter(
+                        x=sdf["sleep_h"], y=sdf["focus"],
+                        mode="markers",
+                        marker=dict(size=8, color="#4CAF50", opacity=0.7),
+                    ))
+                    fig_s.update_layout(xaxis_title="Schlaf (h Vornacht)", yaxis_title="Fokus")
+                    mobile_chart(fig_s, height=350)
                 else:
                     st.info("Noch keine Paare")
             else:
@@ -695,56 +1059,64 @@ if current_page == "korrelation":
 
         st.divider()
         mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Intakes", len(intakes) if isinstance(intakes, list) else 0)
-        mc2.metric("Logs", len(logs) if isinstance(logs, list) else 0)
-        mc3.metric("Health", len(health) if isinstance(health, list) else 0)
+        mc1.metric("Einnahmen", len(intakes_corr) if isinstance(intakes_corr, list) else 0)
+        mc2.metric("Logs", len(logs_corr) if isinstance(logs_corr, list) else 0)
+        mc3.metric("Health", len(health_corr) if isinstance(health_corr, list) else 0)
 
 
 # =========================================================
 # PAGE: System
 # =========================================================
-if current_page == "system":
+elif current_page == "system":
     st.header("System")
 
-    status = api_get("/api/status")
-    if isinstance(status, dict):
+    status_data = api_get("/api/status")
+    if isinstance(status_data, dict):
         sc1, sc2 = st.columns(2)
-        sc1.metric("Service", status.get("service", "?"))
-        sc2.metric("Status", status.get("status", "?"))
-        st.caption(f"Server: {status.get('timestamp', '?')}")
+        sc1.metric("Service", status_data.get("service", "?"))
+        sc2.metric("Status", status_data.get("status", "?"))
+        st.caption(f"Server: {status_data.get('timestamp', '?')}")
 
-        ui = status.get("user", {})
+        ui = status_data.get("user", {})
         if ui:
             uc1, uc2, uc3, uc4 = st.columns(4)
             uc1.metric("Gewicht", f"{ui.get('weight_kg', '?')} kg")
-            uc2.metric("Groesse", f"{ui.get('height_cm', '?')} cm")
+            uc2.metric("Größe", f"{ui.get('height_cm', '?')} cm")
             uc3.metric("Alter", f"{ui.get('age', '?')}")
             uc4.metric("Fasten", "Ja" if ui.get("fasting") else "Nein")
 
     st.divider()
-    st.subheader("Letzte Intakes")
+    st.subheader("Letzte Einnahmen")
     for sn, sl in [("elvanse", "Elvanse"), ("medikinet", "Medikinet IR"), ("medikinet_retard", "Med. retard")]:
         lat = api_get("/api/intake/latest", {"substance": sn})
         if isinstance(lat, dict) and lat.get("found"):
-            ts = lat.get("timestamp", "?")
-            dose = lat.get("dose_mg", "?")
+            ts_val = lat.get("timestamp", "?")
+            dose_val = lat.get("dose_mg", "?")
             try:
-                it = datetime.fromisoformat(ts)
+                it = datetime.fromisoformat(ts_val)
                 hrs = (datetime.now() - it).total_seconds() / 3600
-                st.text(f"{sl}: {dose}mg -- vor {hrs:.1f}h ({ts[11:16]})")
+                st.text(f"{sl}: {dose_val}mg — vor {hrs:.1f}h ({ts_val[11:16]})")
             except Exception:
-                st.text(f"{sl}: {dose}mg @ {ts}")
+                st.text(f"{sl}: {dose_val}mg @ {ts_val}")
         else:
-            st.text(f"{sl}: --")
+            st.text(f"{sl}: —")
 
     st.divider()
-    st.subheader("Log-Schedule")
+    st.subheader("Log-Zeitplan")
     rem = api_get("/api/log-reminder")
     if isinstance(rem, dict):
         sch = rem.get("schedule", [])
         for s in sch:
             icon = "[x]" if s["status"] == "done" else (">>>" if s["status"] == "due" else "[ ]")
-            st.text(f"{icon} {s['target_time']} -- {s['label']}")
+            label = s.get("label", "?")
+            target = s.get("target_time", "?")
+            st.text(f"{icon} {target} — {label}")
+
+        st.caption(
+            "Zeitplan richtet sich nach Elvanse-Einnahme: Baseline (15 Min vor), "
+            "dann +1.5h (Onset), +4h (Peak), +8h (Decline), 22:00 (Vor Schlafen). "
+            "Ohne Elvanse: feste Zeiten (09:00, 12:00, 15:00, 18:00, 21:00)."
+        )
 
     st.divider()
     st.code(f"API: {API_BASE}\nKey: {'***' + API_KEY[-4:] if len(API_KEY) > 4 else '(nicht gesetzt)'}")

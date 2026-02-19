@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS weight_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp   TEXT    NOT NULL,
     weight_kg   REAL    NOT NULL,
-    source      TEXT    DEFAULT 'manual' CHECK(source IN ('manual','ha','watch'))
+    source      TEXT    DEFAULT 'manual' CHECK(source IN ('manual','ha','watch','google_fit'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_weight_ts ON weight_log(timestamp);
@@ -222,6 +222,40 @@ def _migrate_tables():
             """)
             conn.commit()
             print("[bio-db] intake_events co_dafalgan migration complete", flush=True)
+
+    # --- Migration 5: weight_log add google_fit to source CHECK ---
+    cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='weight_log'")
+    row = cur.fetchone()
+    if row:
+        create_sql = row[0] or ""
+        if "google_fit" not in create_sql:
+            print("[bio-db] Migrating weight_log: adding google_fit source", flush=True)
+            cur.executescript("""
+                CREATE TABLE IF NOT EXISTS weight_log_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp   TEXT    NOT NULL,
+                    weight_kg   REAL    NOT NULL,
+                    source      TEXT    DEFAULT 'manual' CHECK(source IN ('manual','ha','watch','google_fit'))
+                );
+                INSERT INTO weight_log_new (id, timestamp, weight_kg, source)
+                    SELECT id, timestamp, weight_kg, source
+                    FROM weight_log;
+                DROP TABLE weight_log;
+                ALTER TABLE weight_log_new RENAME TO weight_log;
+                CREATE INDEX IF NOT EXISTS idx_weight_ts ON weight_log(timestamp);
+            """)
+            conn.commit()
+            print("[bio-db] weight_log migration complete", flush=True)
+
+    # --- Migration 6: fix weight values stored in grams ---
+    # Convert any weight_kg > 500 (clearly grams, not kg) to proper kg
+    cur.execute("SELECT COUNT(*) FROM weight_log WHERE weight_kg > 500")
+    count = cur.fetchone()[0]
+    if count > 0:
+        print(f"[bio-db] Fixing {count} weight entries stored in grams", flush=True)
+        cur.execute("UPDATE weight_log SET weight_kg = weight_kg / 1000.0 WHERE weight_kg > 500")
+        conn.commit()
+        print("[bio-db] Weight gram→kg fix complete", flush=True)
 
 
 def init_db():
@@ -442,6 +476,17 @@ def delete_water_event(event_id: int) -> bool:
     with db_cursor() as cur:
         cur.execute("DELETE FROM water_events WHERE id=?", (event_id,))
         return cur.rowcount > 0
+
+
+def reset_todays_water() -> int:
+    """Delete all water events for today. Returns count of deleted rows."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM water_events WHERE timestamp LIKE ?",
+            (f"{today}%",),
+        )
+        return cur.rowcount
 
 
 # --- Water goals ---

@@ -120,7 +120,8 @@ HA_SENSORS = {
     "calories": "sensor.pixel_9_pro_xl_active_calories_burned_2",
     "sleepmode": "input_boolean.sleepmode",
     "inbed": "input_boolean.inbed",
-    # Water tracking + weight (from HA)
+    # Water tracking + weight (from Google Fit via HealthSync)
     "water_daily": "sensor.water_tracker_daily",
-    "user_weight": "input_number.user_weight_kg",
+    "user_weight": "sensor.pixel_9_pro_xl_weight_2",
+    "user_weight_fallback": "input_number.user_weight_kg",
 }

@@ -321,6 +321,7 @@ def compute_substance_load_ngml(
     substance: str,
     conc_fn,
     default_dose: float,
+    weight_kg: float = USER_WEIGHT_KG,
 ) -> float:
     """
     Sum absolute concentration (ng/ml) of all intakes via linear superposition.
@@ -336,7 +337,7 @@ def compute_substance_load_ngml(
         if hours_since < 0:  # Heaviside: future intakes contribute 0
             continue
         dose = intake.get("dose_mg") or default_dose
-        conc = conc_fn(hours_since, dose)
+        conc = conc_fn(hours_since, dose, weight_kg)
         if conc > 0.01:
             total += conc
     return total
@@ -369,7 +370,8 @@ def compute_substance_level(
 
 # ── DDI Warning System ───────────────────────────────────────────────
 
-def check_ddi_warnings(intakes: list[dict], target_time: datetime) -> list[dict]:
+def check_ddi_warnings(intakes: list[dict], target_time: datetime,
+                       weight_kg: float = USER_WEIGHT_KG) -> list[dict]:
     """
     Check drug-drug interactions at the given time.
     Returns list of warning dicts: {severity, type, title, message}.
@@ -385,28 +387,28 @@ def check_ddi_warnings(intakes: list[dict], target_time: datetime) -> list[dict]
     # Current concentrations (ng/ml)
     elv_conc = compute_substance_load_ngml(
         intakes, target_time, "elvanse",
-        elvanse_concentration, ELVANSE_DEFAULT_DOSE_MG,
+        elvanse_concentration, ELVANSE_DEFAULT_DOSE_MG, weight_kg,
     )
     med_ir_conc = compute_substance_load_ngml(
         intakes, target_time, "medikinet",
-        medikinet_ir_concentration, MEDIKINET_DEFAULT_DOSE_MG,
+        medikinet_ir_concentration, MEDIKINET_DEFAULT_DOSE_MG, weight_kg,
     )
     med_ret_conc = compute_substance_load_ngml(
         intakes, target_time, "medikinet_retard",
-        medikinet_retard_concentration, MEDIKINET_RETARD_DEFAULT_DOSE_MG,
+        medikinet_retard_concentration, MEDIKINET_RETARD_DEFAULT_DOSE_MG, weight_kg,
     )
     caff_conc = compute_substance_load_ngml(
         intakes, target_time, "mate",
-        caffeine_concentration, MATE_CAFFEINE_MG,
+        caffeine_concentration, MATE_CAFFEINE_MG, weight_kg,
     )
     cod_conc = compute_substance_load_ngml(
         intakes, target_time, "co_dafalgan",
-        codein_concentration, CO_DAFALGAN_DEFAULT_DOSE_MG,
+        codein_concentration, CO_DAFALGAN_DEFAULT_DOSE_MG, weight_kg,
     )
 
     # Thresholds (20% of user Cmax = clinically meaningful)
-    d_amph_thresh = allometric_cmax(CMAX_REF["elvanse"], USER_WEIGHT_KG) * 0.2
-    mph_thresh = allometric_cmax(CMAX_REF["medikinet_ir"], USER_WEIGHT_KG) * 0.2
+    d_amph_thresh = allometric_cmax(CMAX_REF["elvanse"], weight_kg) * 0.2
+    mph_thresh = allometric_cmax(CMAX_REF["medikinet_ir"], weight_kg) * 0.2
 
     stimulant_active = (
         elv_conc > d_amph_thresh
@@ -485,8 +487,8 @@ def check_ddi_warnings(intakes: list[dict], target_time: datetime) -> list[dict]
     # --- 4. ZNS-Ueberlastung ---
     cns_total = elv_conc + med_ir_conc + med_ret_conc
     cmax_stim_sum = (
-        allometric_cmax(CMAX_REF["elvanse"], USER_WEIGHT_KG)
-        + allometric_cmax(CMAX_REF["medikinet_ir"], USER_WEIGHT_KG)
+        allometric_cmax(CMAX_REF["elvanse"], weight_kg)
+        + allometric_cmax(CMAX_REF["medikinet_ir"], weight_kg)
     )
     if cns_total > cmax_stim_sum * 0.8 and caff_conc > 800:
         warnings.append({
@@ -579,6 +581,7 @@ def compute_bio_score(
     resting_hr: Optional[float] = None,
     water_intake_ml: Optional[int] = None,
     water_goal_ml: Optional[int] = None,
+    weight_kg: float = USER_WEIGHT_KG,
 ) -> dict:
     """
     Compute composite Bio-Score with allometric PK, DDI warnings,
@@ -637,33 +640,33 @@ def compute_bio_score(
                  + sleep_mod + hrv_pen + hydration_mod)
     score = max(0.0, min(100.0, raw_score))
 
-    # Absolute concentrations (ng/ml)
+    # Absolute concentrations (ng/ml) — allometrically scaled to user weight
     elv_conc = compute_substance_load_ngml(
         intakes, target_time, "elvanse",
-        elvanse_concentration, ELVANSE_DEFAULT_DOSE_MG,
+        elvanse_concentration, ELVANSE_DEFAULT_DOSE_MG, weight_kg,
     )
     med_ir_conc = compute_substance_load_ngml(
         intakes, target_time, "medikinet",
-        medikinet_ir_concentration, MEDIKINET_DEFAULT_DOSE_MG,
+        medikinet_ir_concentration, MEDIKINET_DEFAULT_DOSE_MG, weight_kg,
     )
     med_ret_conc = compute_substance_load_ngml(
         intakes, target_time, "medikinet_retard",
-        medikinet_retard_concentration, MEDIKINET_RETARD_DEFAULT_DOSE_MG,
+        medikinet_retard_concentration, MEDIKINET_RETARD_DEFAULT_DOSE_MG, weight_kg,
     )
     caff_conc = compute_substance_load_ngml(
         intakes, target_time, "mate",
-        caffeine_concentration, MATE_CAFFEINE_MG,
+        caffeine_concentration, MATE_CAFFEINE_MG, weight_kg,
     )
     cod_conc = compute_substance_load_ngml(
         intakes, target_time, "co_dafalgan",
-        codein_concentration, CO_DAFALGAN_DEFAULT_DOSE_MG,
+        codein_concentration, CO_DAFALGAN_DEFAULT_DOSE_MG, weight_kg,
     )
 
     # CNS load (relative sum)
     cns_load = elv_lv + med_combined + caff_lv
 
     # DDI warnings
-    ddi_warnings = check_ddi_warnings(intakes, target_time)
+    ddi_warnings = check_ddi_warnings(intakes, target_time, weight_kg)
 
     # Phase
     phase = _determine_phase(stim_peak, caff_lv, hour)
@@ -681,7 +684,7 @@ def compute_bio_score(
         "medikinet_level": round(med_combined, 3),
         "caffeine_level": round(caff_lv, 3),
         "codein_level": round(
-            cod_conc / max(allometric_cmax(CMAX_REF.get("codein", 100), USER_WEIGHT_KG), 1),
+            cod_conc / max(allometric_cmax(CMAX_REF.get("codein", 100), weight_kg), 1),
             3,
         ),
         # Absolute concentrations (ng/ml)
@@ -730,6 +733,7 @@ def generate_day_curve(
     interval_minutes: int = 15,
     hrv_ms: Optional[float] = None,
     resting_hr: Optional[float] = None,
+    weight_kg: float = USER_WEIGHT_KG,
 ) -> list[dict]:
     """
     Generate Bio-Score data points for a full day at given interval.
@@ -741,7 +745,7 @@ def generate_day_curve(
         t = start + timedelta(minutes=i)
         point = compute_bio_score(
             t, intakes, sleep_duration_min, sleep_confidence,
-            hrv_ms, resting_hr,
+            hrv_ms, resting_hr, weight_kg=weight_kg,
         )
         points.append(point)
 

@@ -124,15 +124,24 @@ async def poll_and_store():
         snapshot.get("steps"),
     )
 
-    # --- Weight import from HA ---
+    # --- Weight import from Google Fit (via HealthSync) ---
     weight_str = results.get("user_weight")
+    is_google_fit = bool(weight_str)
+    if not weight_str:
+        weight_str = results.get("user_weight_fallback")
     if weight_str:
         weight_val = _parse_float(weight_str)
         if weight_val and weight_val > 30:
+            # Google Fit sensor reports weight in grams (e.g. 93800.0 g)
+            # Convert to kg if the value is implausibly high for kg
+            if weight_val > 500:
+                weight_val = weight_val / 1000.0
+                log.info("Converted weight from grams: %.1f kg", weight_val)
             latest_weight = get_latest_weight()
-            if not latest_weight or abs(latest_weight.get("weight_kg", 0) - weight_val) > 0.01:
-                insert_weight(weight_val, source="ha")
-                log.info("Updated weight from HA: %.1f kg", weight_val)
+            if not latest_weight or abs(latest_weight.get("weight_kg", 0) - weight_val) > 0.05:
+                source = "google_fit" if is_google_fit else "ha"
+                insert_weight(weight_val, source=source)
+                log.info("Updated weight from %s: %.1f kg", source, weight_val)
 
     # --- Water sensor import from HA ---
     water_str = results.get("water_daily")

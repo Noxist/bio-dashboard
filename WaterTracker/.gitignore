@@ -1,0 +1,16 @@
+# Build outputs
+entry/build/
+build/
+
+# Hvigor cache
+.hvigor/
+
+# IDE files
+.idea/
+
+# Node modules
+oh_modules/
+node_modules/
+
+# Local config
+local.properties

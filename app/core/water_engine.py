@@ -125,13 +125,10 @@ def expected_intake_at_hour(
     progress = elapsed / waking_total
 
     if is_fasting:
-        # Front-load + back-load: use a mild S-curve
-        # More water in morning fasting window and evening fasting window
-        # sigmoid-ish: slight acceleration at start and end
-        # f(x) = x + 0.12 * sin(2*pi*x)  → pushes intake to morning/evening
-        adjusted = progress + 0.12 * math.sin(2 * math.pi * progress)
-        adjusted = max(0.0, min(1.0, adjusted))
-        return goal_ml * adjusted
+        # Linear pacing — simple and predictable.
+        # OMAD fasting compensation is already in the goal_ml total (+500 ml),
+        # so no need for a complex S-curve shape.
+        return goal_ml * progress
     else:
         return goal_ml * progress
 
@@ -407,3 +404,81 @@ def hydration_bio_score_modifier(
         return -8.0
     else:
         return -10.0
+
+
+# ── Hydration curve for watch display ─────────────────────────────────
+
+def generate_hydration_curve(
+    current_intake_ml: int,
+    goal_ml: int,
+    now: Optional[datetime] = None,
+    wake_hour: float = 7.0,
+    sleep_hour: float = 23.0,
+    is_fasting: bool = USER_IS_FASTING,
+) -> dict:
+    """
+    Generate hydration curve data for the Huawei Watch display.
+
+    Returns a dict with:
+      - expected_curve: list of {hour, ml} points (every 30 min, wake→sleep)
+      - targets: 15/30/45/60 min forward micro-goals with delta_ml
+      - current_ml / goal_ml / current_hour for rendering context
+
+    The curve allows the watch to draw:
+      1. The expected intake line (dashed) — the ideal pace
+      2. Actual intake level vs time (solid fill)
+      3. Target dots at 15/30/45/60 min intervals ahead
+
+    GI absorption kinetics inform the target spacing:
+      - Gastric half-emptying: 13 ± 1 min → 15 min as minimum pacing unit
+      - Peak intestinal absorption: ~20 min → 30 min for first meaningful target
+      - 45 min + 60 min for mid-range and hourly micro-goals
+    """
+    if now is None:
+        now = datetime.now()
+
+    current_hour = now.hour + now.minute / 60.0
+
+    # Generate expected curve points (every 30 min from wake to sleep)
+    expected_curve: list[dict] = []
+    steps = int((sleep_hour - wake_hour) / 0.5) + 1
+    for i in range(steps):
+        h = wake_hour + i * 0.5
+        if h > sleep_hour:
+            h = sleep_hour
+        expected_ml = expected_intake_at_hour(h, goal_ml, wake_hour, sleep_hour, is_fasting)
+        expected_curve.append({"hour": round(h, 2), "ml": int(expected_ml)})
+
+    # Current expected value
+    current_expected = int(expected_intake_at_hour(
+        current_hour, goal_ml, wake_hour, sleep_hour, is_fasting
+    ))
+
+    # Compute interval targets (15, 30, 45, 60 min ahead)
+    targets: list[dict] = []
+    for minutes in [15, 30, 45, 60]:
+        target_hour = current_hour + minutes / 60.0
+        if target_hour > sleep_hour:
+            target_hour = sleep_hour
+        target_ml = int(expected_intake_at_hour(
+            target_hour, goal_ml, wake_hour, sleep_hour, is_fasting
+        ))
+        delta_ml = max(0, target_ml - current_intake_ml)
+        label = f"{minutes}'" if minutes < 60 else "1h"
+        targets.append({
+            "minutes": minutes,
+            "target_ml": target_ml,
+            "delta_ml": delta_ml,
+            "label": label,
+        })
+
+    return {
+        "current_ml": current_intake_ml,
+        "goal_ml": goal_ml,
+        "current_hour": round(current_hour, 2),
+        "current_expected_ml": current_expected,
+        "wake_hour": wake_hour,
+        "sleep_hour": sleep_hour,
+        "targets": targets,
+        "expected_curve": expected_curve,
+    }
