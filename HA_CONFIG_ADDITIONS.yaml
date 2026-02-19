@@ -143,3 +143,77 @@ input_button:
 #       message: >
 #         Du hast {{ states('sensor.water_tracker_daily') }} ml getrunken.
 #   mode: single
+
+
+# ──────────────────────────────────────────────
+# 6. WATCH HR + SLEEP COMPANION — Template-Sensoren
+# ──────────────────────────────────────────────
+# Die Watch pusht Herzfrequenz und Schlaf-Daten via POST /api/health
+# an den bio-dashboard-Server. Dieser speichert sie in health_snapshots.
+#
+# Um die Daten auch in HA sichtbar zu machen, kannst du REST-Sensoren
+# anlegen, die den Server pollen. Alternativ sind sie bereits via
+# Google Fit → HealthSync → HA verfügbar (sensor.pixel_9_pro_xl_heart_rate_2 etc.).
+#
+# Falls du ZUSÄTZLICH die Watch-Daten direkt in HA sehen willst:
+
+# UNTER deinem bestehenden  template:  einfügen:
+
+#   - sensor:
+#       - name: "Watch Heart Rate"
+#         unique_id: watch_heart_rate
+#         unit_of_measurement: "bpm"
+#         icon: mdi:heart-pulse
+#         device_class: None
+#         state_class: measurement
+#         state: >
+#           {{ state_attr('sensor.bio_dashboard_health', 'heart_rate') | float(0) }}
+#
+#       - name: "Watch Resting HR"
+#         unique_id: watch_resting_hr
+#         unit_of_measurement: "bpm"
+#         icon: mdi:heart
+#         state_class: measurement
+#         state: >
+#           {{ state_attr('sensor.bio_dashboard_health', 'resting_hr') | float(0) }}
+#
+#       - name: "Watch Sleep Duration"
+#         unique_id: watch_sleep_duration
+#         unit_of_measurement: "h"
+#         icon: mdi:sleep
+#         state_class: measurement
+#         state: >
+#           {{ state_attr('sensor.bio_dashboard_health', 'sleep_duration') | float(0) }}
+
+# ALTERNATIV: REST-Sensor der den bio-dashboard-Server direkt pollt:
+
+#  rest:
+#    - resource: "https://bioapi.thegrandprinterofmemesandunfinitetodosservanttonox.tech/api/health/latest"
+#      headers:
+#        x-api-key: "bio_leandro_2026_secret"
+#      scan_interval: 900
+#      sensor:
+#        - name: "Bio Dashboard Latest HR"
+#          unique_id: bio_dashboard_latest_hr
+#          value_template: "{{ value_json.heart_rate | default(0) }}"
+#          unit_of_measurement: "bpm"
+#          icon: mdi:heart-pulse
+#
+#        - name: "Bio Dashboard Latest Resting HR"
+#          unique_id: bio_dashboard_latest_rhr
+#          value_template: "{{ value_json.resting_hr | default(0) }}"
+#          unit_of_measurement: "bpm"
+#          icon: mdi:heart
+#
+#        - name: "Bio Dashboard Sleep Duration"
+#          unique_id: bio_dashboard_sleep_duration
+#          value_template: "{{ value_json.sleep_duration | default(0) }}"
+#          unit_of_measurement: "h"
+#          icon: mdi:sleep
+
+# ──────────────────────────────────────────────
+# HINWEIS: Du brauchst diese HA-Sensoren NICHT für die Grundfunktion.
+# Die Watch pusht direkt an den Server, der Server speichert alles.
+# Die HA-Sensoren sind nur nützlich wenn du die Daten in HA-Dashboards
+# oder Automationen verwenden willst (z.B. Benachrichtigung bei hohem Puls).
+# ──────────────────────────────────────────────

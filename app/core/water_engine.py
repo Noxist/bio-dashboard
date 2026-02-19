@@ -109,9 +109,19 @@ def expected_intake_at_hour(
     """
     Expected cumulative intake at a given hour of day.
 
-    For fasting users: front-load morning (07-12) and back-load evening
-    (18-23) to compensate for missing breakfast/dinner moisture.
-    For non-fasting: roughly linear over waking hours.
+    Uses a front-loaded curve: morning hydration is prioritised because
+    of overnight dehydration recovery, cortisol-driven fluid loss, and
+    the fact that most physical/cognitive demand occurs before evening.
+
+    The curve is f(t) = t^0.85 where t ∈ [0, 1] is the fraction of
+    waking hours elapsed.  This gives roughly:
+      - First 50% of the day → ~55% of goal
+      - Last 50% of the day  → ~45% of goal
+    Gentle enough to not feel forced, steep enough to matter.
+
+    For fasting users the same shape applies — OMAD compensation is
+    already baked into goal_ml (+500 ml), so the curve shape is the
+    same; only the total is larger.
 
     Returns expected_ml at the given hour.
     """
@@ -122,15 +132,12 @@ def expected_intake_at_hour(
 
     waking_total = sleep_hour - wake_hour
     elapsed = hour - wake_hour
-    progress = elapsed / waking_total
+    t = elapsed / waking_total  # normalised progress 0→1
 
-    if is_fasting:
-        # Linear pacing — simple and predictable.
-        # OMAD fasting compensation is already in the goal_ml total (+500 ml),
-        # so no need for a complex S-curve shape.
-        return goal_ml * progress
-    else:
-        return goal_ml * progress
+    # Front-loaded power curve: steeper in the morning, gentler in the evening.
+    progress = t ** 0.85
+
+    return goal_ml * progress
 
 
 # ── Hydration status assessment ──────────────────────────────────────
