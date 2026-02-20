@@ -905,10 +905,10 @@ elif current_page == "kurven":
 2. **Erythrozyten-Hydrolyse** — Enzymatische Spaltung zu d-Amphetamin im Blut
 3. **Elimination** — Renale Ausscheidung von d-Amphetamin
 
-Jede Stufe hat eine eigene Geschwindigkeitskonstante (k\_abs, k\_hyd, k\_e).
+Jede Stufe hat eine eigene Geschwindigkeitskonstante (k_abs, k_hyd, k_e).
 Die Gesamtlösung ist eine 3-Kompartiment-Kaskade:
 
-> A(t) = G₀ · k\_abs · k\_hyd · Σ\[ e^(−rᵢ·t) / Π(rⱼ − rᵢ) \]
+> A(t) = G₀ · k_abs · k_hyd · Σ[ e^(−rᵢ·t) / Π(rⱼ − rᵢ) ]
 
 Das ergibt eine breitere, flachere Kurve als ein einfaches Bateman-Modell —
 typisch für Elvanse mit dem verzögerten Prodrug-Mechanismus (Tmax ≈ 3.8h statt 1–2h).
