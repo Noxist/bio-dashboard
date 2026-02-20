@@ -460,25 +460,37 @@ elif current_page == "hydration":
         wake_h = 7.0
         sleep_h = 23.0
 
-        # Front-loaded expected curve (matches water_engine.py: t^0.85)
-        hours_range = [h * 0.25 for h in range(int(wake_h * 4), int(sleep_h * 4) + 1)]
-        expected_curve = []
-        for h in hours_range:
-            if h <= wake_h:
-                expected_curve.append(0)
-                continue
-            if h >= sleep_h:
-                expected_curve.append(goal_ml)
-                continue
-            waking_total = sleep_h - wake_h
-            elapsed = h - wake_h
-            t = elapsed / waking_total
-            progress_val = t ** 0.85  # front-loaded: steeper morning, gentler evening
-            expected_curve.append(int(goal_ml * progress_val))
+        # Fetch instruction from API — contains expected_curve, adaptive_curve
+        instr = api_get("/api/water/instruction", {
+            "current_intake": intake_ml,
+            "daily_goal": goal_ml,
+        })
+
+        # ── Expected (ideal) curve — from API server data ──
+        # Use server's pre-computed expected_curve so dashboard always matches
+        # the engine exactly. Fallback to t^0.65 local computation if offline.
+        hours_range: list[float] = []
+        expected_curve: list[int] = []
+        hcurve = instr.get("hydration_curve") if isinstance(instr, dict) else None
+        if hcurve and hcurve.get("expected_curve"):
+            for pt in hcurve["expected_curve"]:
+                hours_range.append(pt["hour"])
+                expected_curve.append(pt["ml"])
+        else:
+            # Offline fallback — t^0.65 is visibly curved (not t^0.85 which looks linear)
+            hours_range = [h * 0.5 for h in range(int(wake_h * 2), int(sleep_h * 2) + 1)]
+            for h in hours_range:
+                if h <= wake_h:
+                    expected_curve.append(0)
+                elif h >= sleep_h:
+                    expected_curve.append(goal_ml)
+                else:
+                    t = (h - wake_h) / (sleep_h - wake_h)
+                    expected_curve.append(int(goal_ml * (t ** 0.65)))
 
         fig_pace = go.Figure()
 
-        # Expected pacing (front-loaded t^0.85)
+        # Expected pacing curve (dashed blue)
         fig_pace.add_trace(go.Scatter(
             x=hours_range,
             y=expected_curve,
@@ -498,8 +510,8 @@ elif current_page == "hydration":
             for ev in sorted(events, key=lambda e: e.get("timestamp", "")):
                 ts = ev.get("timestamp", "")
                 try:
-                    t = datetime.fromisoformat(ts)
-                    h = t.hour + t.minute / 60.0
+                    t_ev = datetime.fromisoformat(ts)
+                    h = t_ev.hour + t_ev.minute / 60.0
                 except (ValueError, TypeError):
                     continue
                 cumulative += ev.get("amount_ml", 0)
@@ -519,12 +531,8 @@ elif current_page == "hydration":
             ))
 
         # Adaptive catch-up curve from API
-        adaptive = api_get("/api/water/instruction", {
-            "current_intake": intake_ml,
-            "daily_goal": goal_ml,
-        })
-        if isinstance(adaptive, dict) and adaptive.get("adaptive_curve"):
-            ac = adaptive["adaptive_curve"]
+        if isinstance(instr, dict) and instr.get("adaptive_curve"):
+            ac = instr["adaptive_curve"]
             ac_curve = ac.get("adaptive_curve", [])
             if ac_curve:
                 ac_hours = [p["hour"] for p in ac_curve]
